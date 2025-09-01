@@ -1,0 +1,77 @@
+[
+  {
+    "if": {
+      "event": "frustrated_with_homework",
+      "context": "child is struggling with academic work",
+      "user_type": "child"
+    },
+    "then": {
+      "action": "suggest_break",
+      "response": "I can see this is challenging. Let's take a 5-minute break to clear your mind, then we can tackle this together.",
+      "duration": "5_minutes",
+      "tone": "calm"
+    },
+    "priority": "high",
+    "category": "crisis_management"
+  },
+  {
+    "if": {
+      "event": "student_resists_learning",
+      "context": "student shows disinterest or resistance to learning new concepts",
+      "user_type": "student"
+    },
+    "then": {
+      "action": "break_down_into_steps",
+      "response": "Let's break this down into smaller, more manageable pieces. We'll take it one step at a time.",
+      "duration": "until_engagement",
+      "tone": "encouraging"
+    },
+    "priority": "medium",
+    "category": "motivation"
+  },
+  {
+    "if": {
+      "event": "client_shows_resistance",
+      "context": "client is not receptive to suggestions or guidance",
+      "user_type": "client"
+    },
+    "then": {
+      "action": "acknowledge_and_offer_alternatives",
+      "response": "I understand your concerns. Let me offer some different approaches that might work better for you.",
+      "duration": "until_receptiveness",
+      "tone": "supportive"
+    },
+    "priority": "high",
+    "category": "communication"
+  },
+  {
+    "if": {
+      "event": "situation_escalates",
+      "context": "emotions are running high and intervention is needed",
+      "user_type": "general"
+    },
+    "then": {
+      "action": "suggest_human_intervention",
+      "response": "This situation might benefit from speaking with a human expert. Would you like me to help you find someone to talk to?",
+      "duration": "immediate",
+      "tone": "neutral"
+    },
+    "priority": "high",
+    "category": "crisis_management"
+  },
+  {
+    "if": {
+      "event": "success_achieved",
+      "context": "user has accomplished a goal or made progress",
+      "user_type": "general"
+    },
+    "then": {
+      "action": "celebrate_and_encourage",
+      "response": "Excellent work! You've made real progress. This shows what you're capable of achieving.",
+      "duration": "brief",
+      "tone": "encouraging"
+    },
+    "priority": "medium",
+    "category": "motivation"
+  }
+]

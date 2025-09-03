@@ -46,12 +46,6 @@ pip install -r requirements.txt
 python run.py
 ```
 
-Or using uvicorn directly:
-
-```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
 ### 4. Access the Interface
 
 Open your browser and navigate to: `http://localhost:8000`

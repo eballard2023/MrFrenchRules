@@ -165,14 +165,16 @@ class DatabaseManager:
     async def update_interview(self, session_id: str, update_data: Dict[str, Any]) -> bool:
         """Update interview session (upsert if missing)."""
         try:
-            update_doc: Dict[str, Any] = {
-                "$set": update_data,
-                "$setOnInsert": {
-                    "session_id": session_id,
-                    "started_at": datetime.now(timezone.utc),
-                    "status": update_data.get("status", "in_progress"),
-                },
+            # Avoid conflicting writes on the same path (e.g., 'status') across operators
+            set_on_insert: Dict[str, Any] = {
+                "session_id": session_id,
+                "started_at": datetime.now(timezone.utc),
             }
+            # Only set default status on insert if caller didn't provide a status in $set
+            if "status" not in update_data:
+                set_on_insert["status"] = "in_progress"
+
+            update_doc: Dict[str, Any] = {"$set": update_data, "$setOnInsert": set_on_insert}
             result = await self.interviews_collection.update_one(
                 {"session_id": session_id},
                 update_doc,

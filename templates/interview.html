@@ -238,18 +238,12 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>AI Coach Interview System</h1>
-            <p>Behavioral Expert Knowledge Extraction Platform</p>
+            <h1>Behavioral Expert Knowledge Extraction</h1>
         </div>
         
         <div class="chat-container">
             <div class="messages" id="messages">
-                <div class="message ai">
-                    <div class="message-avatar">AI</div>
-                    <div class="message-content">
-                        Welcome to the AI Coach Interview System.Please click "Begin Interview" to start the interview.
-                    </div>
-                </div>
+                <!-- Messages will be added here -->
             </div>
             
             <div class="loading" id="loading">
@@ -258,8 +252,7 @@
             
             <div class="input-area">
                 <div class="controls">
-                    <button class="btn btn-primary" id="startBtn" onclick="startInterview()">Begin Interview</button>
-                    <button class="btn btn-success" id="submitBtn" onclick="submitInterview()" disabled>Submit</button>
+                    <button class="btn btn-success" id="submitBtn" onclick="submitInterview()" disabled>End Interview</button>
                 </div>
                 <div class="status" id="status">Ready to begin knowledge extraction</div>
                 <div class="input-container">
@@ -282,7 +275,6 @@
         const messagesContainer = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
         const sendBtn = document.getElementById('sendBtn');
-        const startBtn = document.getElementById('startBtn');
         const submitBtn = document.getElementById('submitBtn');
         const status = document.getElementById('status');
         const loading = document.getElementById('loading');
@@ -294,10 +286,14 @@
             }
         });
 
+        // Automatically start the interview when the page loads
+        window.addEventListener('load', function() {
+            startInterview();
+        });
+
         async function startInterview() {
             try {
                 showLoading(true);
-                startBtn.disabled = true;
                 
                 const response = await fetch('/start_interview', {
                     method: 'POST',

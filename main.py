@@ -454,24 +454,13 @@ async def chat_with_interviewer(chat_message: ChatMessage):
             if is_affirmative(chat_message.message):
                 # User wants to know about implementation, so explain CURRENT IMPLEMENTATION details from system prompt
                 ai_message = (
-                    "Great! Here's an overview of our current implementation details:\n\n"
-                    "**MR. FRENCH PROJECT CONTEXT:**\n"
+                    "Great! Here's a brief overview of our current implementation:\n\n"
                     "Mr. French is a conversational AI that helps families manage children's routines, tasks, and behavior through three connected chat experiences:\n"
-                    "• Parent ↔ Mr. French (task management, progress reports, zone updates, context discussions)\n"
-                    "• Timmy (child) ↔ Mr. French (reminders, encouragement, task completion, 'what's due' queries)\n"
-                    "• Parent ↔ Timmy (capturing real family instructions like 'Timmy, do the dishes' into actionable tasks)\n\n"
-                    "**CORE FUNCTIONALITIES:**\n"
-                    "• Converts everyday language into structured, trackable tasks with due dates/times and rewards\n"
-                    "• Maintains memory and context across multiple conversation threads using vector storage\n"
-                    "• Triggers reminders and updates automatically through scheduling\n"
-                    "• Keeps Parent informed and gently guides Timmy\n"
-                    "• Supports multiple families with secure authentication and data isolation\n"
-                    "• Collects comprehensive child information through guided onboarding\n\n"
-                    "**TIMMY ZONE SYSTEM:**\n"
-                    "• Red Zone: High stress, frustration, or emotional distress - requires calm, supportive responses\n"
-                    "• Green Zone: Normal, engaged state - can handle routine tasks and learning\n"
-                    "• Blue Zone: Low energy, tired, or disengaged - needs gentle encouragement and simple tasks\n\n"
-                    "Now that you understand our current implementation, let's delve into how your expertise can enhance Mr. French's capabilities. "
+                    "• Parent ↔ Mr. French (task management, progress reports, context discussions)\n"
+                    "• Timmy (child) ↔ Mr. French (reminders, encouragement, task completion)\n"
+                    "• Parent ↔ Timmy (capturing real family instructions into actionable tasks)\n\n"
+                    "It converts everyday language into structured tasks, maintains context across conversations, and provides automated reminders.\n\n"
+                    "Now let's delve into how your expertise can enhance Mr. French's capabilities. "
                     "To start, could you describe your area of expertise and how it could help Mr. French better support families?"
                 )
                 session.conversation_history.append({"role": "assistant", "content": ai_message})

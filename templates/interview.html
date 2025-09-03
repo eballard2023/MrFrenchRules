@@ -312,7 +312,7 @@
                     
                     messageInput.disabled = false;
                     sendBtn.disabled = false;
-                    status.textContent = `Question ${questionNumber} of interview`;
+                    status.textContent = `Interview in progress`;
                 } else {
                     addMessage('ai', `Error: ${data.detail}`);
                 }
@@ -353,7 +353,7 @@
                     addMessage('ai', data.message);
                     
                     questionNumber = data.question_number;
-                    status.textContent = `Question ${questionNumber} of interview`;
+                    status.textContent = `Interview in progress`;
                     
                     // Enable submit button after first question
                     if (questionNumber > 1) {

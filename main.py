@@ -192,6 +192,30 @@ Mr. French is a conversational AI that helps families manage children's routines
 - Timmy (child) ↔ Mr. French (reminders, encouragement, task completion, "what's due" queries)
 - Parent ↔ Timmy (capturing real family instructions like "Timmy, do the dishes" into actionable tasks)
 
+Current Implementation - The Three Chats
+Mr. French ties together three distinct but connected conversation types. Collections are stored in ChromaDB with metadata (role, sender, timestamp, group_id for family isolation).
+
+### 4.1 Parent ↔ Mr. French (`parent-mrfrench`)
+- **Audience**: The Parent talking directly to Mr. French
+- **Purpose**: Ask for summaries, add/update/delete tasks, change Timmy's zone when explicitly requested, receive progress reports, and discuss context
+- **Flow**: Parent sends a message → Mr. French analyzes intent → Mr. French replies to the Parent and may update tasks/zone and notify Timmy
+- **Storage**: Chroma collection `parent-mrfrench` with family isolation
+- **Authentication**: Required via session token
+
+### 4.2 Timmy ↔ Mr. French (`timmy-mrfrench`)
+- **Audience**: Timmy talking directly to Mr. French
+- **Purpose**: Ask "what's due," declare task completion, receive reminders, get encouragement, and learn about rewards
+- **Flow**: Timmy sends a message → Mr. French analyzes intent (e.g., update completion) → Mr. French replies and may notify the Parent
+- **Storage**: Chroma collection `timmy-mrfrench` with family isolation
+- **Authentication**: Required via session token
+
+### 4.3 Parent ↔ Timmy (`parent-timmy`)
+- **Audience**: Parent and Timmy talking to each other (human conversation), optionally AI-simulated
+- **Purpose**: Capture real family instructions like "Timmy, do the dishes," which should become actionable tasks. Optionally generate full AI conversations for testing or demos
+- **Flow**: Message is saved to `parent-timmy-realtime`, then Mr. French's analyzer parses the latest turn and updates tasks when appropriate (e.g., direct commands to Timmy)
+- **Storage**: Chroma collection `parent-timmy-realtime` with family isolation. For AI-simulated exchanges, `ai-parent-timmy` is used
+- **Authentication**: Required via session token
+
 **CORE FUNCTIONALITIES:**
 - Converts everyday language into structured, trackable tasks with due dates/times and rewards
 - Maintains memory and context across multiple conversation threads using vector storage
@@ -310,11 +334,12 @@ async def start_interview():
         logger.error(f"Failed to save interview to database: {e}")
         # Continue with in-memory storage
     
-    # Start with Mr. French introduction instead of first question
+    # Start with Mr. French introduction and ask about implementation details
     ai_message = (
         "Hi! I'm here to interview you about improving Mr. French, our conversational AI family assistant. "
+        "Mr. French helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
         "This interview is to extract expert rules to make Mr. French better at supporting families. "
-        "Would you like to know about Mr. French and how you can help?"
+        "Would you like to know about Mr.French or how you can help?"
     )
     session.conversation_history.append({"role": "assistant", "content": ai_message})
     
@@ -369,37 +394,37 @@ async def chat_with_interviewer(chat_message: ChatMessage):
                 "Hi! I'm here to interview you about improving Mr. French, our conversational AI family assistant. "
                 "Mr. French helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
                 "This interview is to extract expert rules to make Mr. French better at supporting families. "
-                "Would you like to know about our current implementation and how you can help?"
+                "Would you like to know about our current implementation details and how you can help?"
             )
         elif msg_type == "smalltalk":
             ai_message = (
                 "I'm good, thanks for asking! I'm here to interview you about improving Mr. French, our conversational AI family assistant. "
                 "Mr. French helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
                 "This interview is to extract expert rules to make Mr. French better at supporting families. "
-                "Would you like to know about our current implementation and how you can help?"
+                "Would you like to know about our current implementation details and how you can help?"
             )
         elif msg_type == "who_are_you":
             ai_message = (
                 "I'm an AI interviewer to capture your expertise for improving Mr. French, our conversational AI family assistant. "
                 "Mr. French helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
                 "This interview is to extract expert rules to make Mr. French better at supporting families. "
-                "Would you like to know about our current implementation and how you can help?"
+                "Would you like to know about our current implementation details and how you can help?"
             )
         elif msg_type == "who_is_mrfrench":
             ai_message = (
                 "Mr. French is a conversational AI family assistant. It turns everyday parent instructions into structured tasks with due dates, reminders, and rewards. "
                 "There are three connected chats: Parent ↔ Mr. French (to create/manage tasks and get progress), Timmy (child) ↔ Mr. French (to receive reminders, encouragement, and complete tasks), and Parent ↔ Timmy (to capture real instructions). "
-                "It keeps context over time and uses a simple Red/Green/Blue ‘Timmy Zone’ to guide tone and responses. Shall we continue with the interview?"
+                "It keeps context over time and uses a simple Red/Green/Blue 'Timmy Zone' to guide tone and responses. Would you like to know more about the current implementation details?"
             )
         elif msg_type == "who_is_timmy":
             ai_message = (
                 "Timmy is the child persona that Mr. French supports. Timmy receives friendly reminders, step-by-step help, encouragement, and simple rewards for completing tasks like homework, chores, and bedtime routines. "
-                "Mr. French adjusts its tone using the Red/Green/Blue ‘Timmy Zone’ (e.g., calm guidance if Timmy is frustrated). Ready to continue?"
+                "Mr. French adjusts its tone using the Red/Green/Blue 'Timmy Zone' (e.g., calm guidance if Timmy is frustrated). Would you like to know more about the current implementation details?"
             )
         else:  # about_interview
             ai_message = (
                 "In this interview, we'll discuss your expertise, guiding principles, outcomes you aim for, how you measure progress, methods you use, challenges you face, and more related to your area of expertise. "
-                "We capture your expertise so Mr. French behaves like an expert in real family conversations. Are you ready to continue with the questions?"
+                "We capture your expertise so Mr. French behaves like an expert in real family conversations. Would you like to know about our current implementation details first?"
             )
         session.conversation_history.append({"role": "assistant", "content": ai_message})
         return {
@@ -427,11 +452,26 @@ async def chat_with_interviewer(chat_message: ChatMessage):
         # Only advance beyond the first question after readiness/answer
         if session.current_question_index == 0:
             if is_affirmative(chat_message.message):
-                # User wants to know about implementation, so explain it first
+                # User wants to know about implementation, so explain CURRENT IMPLEMENTATION details from system prompt
                 ai_message = (
-                    "Great! So, Mr. French functions as a conversational AI that assists families in managing children's routines, tasks, and behavior through chat experiences. "
-                    "It helps parents communicate with their children, manage tasks, provide progress reports, and more. "
-                    "Now, let's delve into how your expertise can enhance Mr. French's capabilities. "
+                    "Great! Here's an overview of our current implementation details:\n\n"
+                    "**MR. FRENCH PROJECT CONTEXT:**\n"
+                    "Mr. French is a conversational AI that helps families manage children's routines, tasks, and behavior through three connected chat experiences:\n"
+                    "• Parent ↔ Mr. French (task management, progress reports, zone updates, context discussions)\n"
+                    "• Timmy (child) ↔ Mr. French (reminders, encouragement, task completion, 'what's due' queries)\n"
+                    "• Parent ↔ Timmy (capturing real family instructions like 'Timmy, do the dishes' into actionable tasks)\n\n"
+                    "**CORE FUNCTIONALITIES:**\n"
+                    "• Converts everyday language into structured, trackable tasks with due dates/times and rewards\n"
+                    "• Maintains memory and context across multiple conversation threads using vector storage\n"
+                    "• Triggers reminders and updates automatically through scheduling\n"
+                    "• Keeps Parent informed and gently guides Timmy\n"
+                    "• Supports multiple families with secure authentication and data isolation\n"
+                    "• Collects comprehensive child information through guided onboarding\n\n"
+                    "**TIMMY ZONE SYSTEM:**\n"
+                    "• Red Zone: High stress, frustration, or emotional distress - requires calm, supportive responses\n"
+                    "• Green Zone: Normal, engaged state - can handle routine tasks and learning\n"
+                    "• Blue Zone: Low energy, tired, or disengaged - needs gentle encouragement and simple tasks\n\n"
+                    "Now that you understand our current implementation, let's delve into how your expertise can enhance Mr. French's capabilities. "
                     "To start, could you describe your area of expertise and how it could help Mr. French better support families?"
                 )
                 session.conversation_history.append({"role": "assistant", "content": ai_message})

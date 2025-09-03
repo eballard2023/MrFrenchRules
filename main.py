@@ -123,13 +123,7 @@ def is_smalltalk_or_project(message: str) -> str:
         return "about_interview"
     return "none"
 
-def is_affirmative(message: str) -> bool:
-    m = (message or "").strip().lower()
-    affirm = [
-        "yes", "yeah", "yep", "sure", "ok", "okay", "ready", "let's start", "lets start",
-        "begin", "start", "go ahead", "yup"
-    ]
-    return any(_matches_phrase(m, a) for a in affirm)
+
 
 FIRST_QUESTION_TEXT = "To start, could you describe your area of expertise and how you usually apply it?"
 
@@ -334,12 +328,12 @@ async def start_interview():
         logger.error(f"Failed to save interview to database: {e}")
         # Continue with in-memory storage
     
-    # Start with Mr. French introduction and ask about implementation details
+    # Start with Mr. French introduction and first question
     ai_message = (
         "Hi! I'm here to interview you about improving Mr. French, our conversational AI family assistant. "
         "Mr. French helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
         "This interview is to extract expert rules to make Mr. French better at supporting families. "
-        "Would you like to know about Mr.French or how you can help?"
+        "To start, could you describe your area of expertise and how it could help Mr. French better support families?"
     )
     session.conversation_history.append({"role": "assistant", "content": ai_message})
     
@@ -449,33 +443,8 @@ async def chat_with_interviewer(chat_message: ChatMessage):
         
         ai_message = sanitize_question(response.choices[0].message.content)
         session.conversation_history.append({"role": "assistant", "content": ai_message})
-        # Only advance beyond the first question after readiness/answer
-        if session.current_question_index == 0:
-            if is_affirmative(chat_message.message):
-                # User wants to know about implementation, so explain CURRENT IMPLEMENTATION details from system prompt
-                ai_message = (
-                    "Great! Here's a brief overview of our current implementation:\n\n"
-                    "Mr. French is a conversational AI that helps families manage children's routines, tasks, and behavior through three connected chat experiences:\n"
-                    "• Parent ↔ Mr. French (task management, progress reports, context discussions)\n"
-                    "• Timmy (child) ↔ Mr. French (reminders, encouragement, task completion)\n"
-                    "• Parent ↔ Timmy (capturing real family instructions into actionable tasks)\n\n"
-                    "It converts everyday language into structured tasks, maintains context across conversations, and provides automated reminders.\n\n"
-                    "Now let's delve into how your expertise can enhance Mr. French's capabilities. "
-                    "To start, could you describe your area of expertise and how it could help Mr. French better support families?"
-                )
-                session.conversation_history.append({"role": "assistant", "content": ai_message})
-                session.current_question_index = 1
-                return {
-                    "message": ai_message,
-                    "question_number": 2,
-                    "is_complete": False,
-                    "auto_submitted": False,
-                    "final_note": None
-                }
-            else:
-                session.current_question_index = 0
-        else:
-            session.current_question_index += 1
+        # Advance question index normally
+        session.current_question_index += 1
         
         # Update database (persist history and counters)
         try:

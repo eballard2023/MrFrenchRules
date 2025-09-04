@@ -202,6 +202,12 @@
             color: white;
         }
 
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+            border-color: #dc3545;
+        }
+
         .btn:hover {
             transform: translateY(-1px);
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
@@ -252,7 +258,7 @@
             
             <div class="input-area">
                 <div class="controls">
-                    <button class="btn btn-success" id="submitBtn" onclick="submitInterview()" disabled>End Interview</button>
+                    <button class="btn btn-danger" id="submitBtn" onclick="submitInterview()" disabled>End Interview</button>
                 </div>
                 <div class="status" id="status">Ready to begin knowledge extraction</div>
                 <div class="input-container">
@@ -312,7 +318,7 @@
                     
                     messageInput.disabled = false;
                     sendBtn.disabled = false;
-                    status.textContent = `Interview in progress`;
+                    status.textContent = ``;
                 } else {
                     addMessage('ai', `Error: ${data.detail}`);
                 }
@@ -353,7 +359,7 @@
                     addMessage('ai', data.message);
                     
                     questionNumber = data.question_number;
-                    status.textContent = `Interview in progress`;
+                    status.textContent = ``;
                     
                     // Enable submit button after first question
                     if (questionNumber > 1) {
@@ -414,6 +420,27 @@
             }
         }
 
+        function escapeHtml(unsafe) {
+            return unsafe
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function formatMarkdown(text) {
+            // Escape HTML first
+            let html = escapeHtml(text);
+            // Bold: **text**
+            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1<\/strong>');
+            // Italic: *text*
+            html = html.replace(/(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)/g, '<em>$1<\/em>');
+            // Line breaks
+            html = html.replace(/\n/g, '<br>');
+            return html;
+        }
+
         function addMessage(sender, content) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${sender}`;
@@ -424,7 +451,7 @@
             
             const messageContent = document.createElement('div');
             messageContent.className = 'message-content';
-            messageContent.textContent = content;
+            messageContent.innerHTML = formatMarkdown(content);
             
             messageDiv.appendChild(avatar);
             messageDiv.appendChild(messageContent);

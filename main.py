@@ -88,6 +88,25 @@ def sanitize_question(text: str) -> str:
     except Exception:
         return text
 
+# Helper: remove praise/evaluative phrases for neutral tone
+def neutralize_praise(text: str) -> str:
+    try:
+        phrases = [
+            r"\bthat's\s+great\b", r"\bgreat\b", r"\bexcellent\b", r"\blove\s+that\b",
+            r"\bawesome\b", r"\bperfect\b", r"\bwonderful\b", r"\bbrilliant\b",
+            r"\bthat's\s+exactly\s+right\b", r"\bwell\s+done\b", r"\bgood\s+job\b",
+            r"\bamazing\b", r"\bfantastic\b", r"\bimpressive\b", r"\bnice\b",
+            r"\bthank\s+you\s+for\s+sharing\b", r"\bappreciate\b"
+        ]
+        neutral = text
+        for p in phrases:
+            neutral = re.sub(p, "", neutral, flags=re.IGNORECASE)
+        # Collapse extra spaces created by removals
+        neutral = re.sub(r"\s{2,}", " ", neutral).strip()
+        return neutral if neutral else text
+    except Exception:
+        return text
+
 # Helper: detect small-talk or project questions
 def _matches_phrase(text: str, phrase: str) -> bool:
     pattern = r"\b" + re.escape(phrase) + r"\b"
@@ -132,11 +151,20 @@ async def startup_event():
     """Initialize database connection on startup"""
     global session_counter
     logger.info("Starting up the application...")
+    
+    # Log environment variables for debugging
+    logger.info(f"MongoDB Connection String: {os.getenv('MONGODB_CONNECTION_STRING', 'NOT SET')}")
+    logger.info(f"MongoDB Database Name: {os.getenv('MONGODB_DATABASE_NAME', 'NOT SET')}")
+    
     success = await db_manager.connect()
     if not success:
-        logger.error("Failed to connect to MongoDB. Application will continue with in-memory storage.")
+        logger.error("❌ FAILED TO CONNECT TO MONGODB. Application will continue with in-memory storage.")
+        logger.error("❌ This means interviews will NOT be saved to database!")
+        logger.error("❌ Check your environment variables and MongoDB connection.")
     else:
-        logger.info("Successfully connected to MongoDB")
+        logger.info("✅ Successfully connected to MongoDB")
+        logger.info(f"✅ Database: {db_manager.database.name}")
+        logger.info(f"✅ Collections: interviews, extracted_rules, rules_collections")
         # Initialize session counter from database
         try:
             interviews = await db_manager.get_all_interviews()
@@ -294,20 +322,35 @@ Mr. French ties together three distinct but connected conversation types. Collec
 - For unrelated trivia, decline and return to the interview
 - **CRITICAL**: On greeting ("hello", "hi"), start with Mr. French introduction, then ask about current implementation knowledge
 - **NEVER** respond with "I'm here to help" or similar general assistant language
-- **RESPONSE STYLE**: Keep responses brief. After receiving an answer, give a short acknowledgment (like "Interesting" or "That's great") and then ask the next question directly. Don't elaborate on their previous response.
-- **CRITICAL**: NEVER explain, analyze, or comment on their previous answer. Just acknowledge briefly and ask the next question. Keep responses under 2 sentences."""
+- **RESPONSE STYLE**: Keep responses brief and neutral. Avoid praise or evaluative language (e.g., "great", "excellent", "love that", "that's exactly right"). After receiving an answer, give a short neutral acknowledgment (e.g., "Noted." or "Understood.") and then ask the next question directly. Don't elaborate on their previous response.
+- **CRITICAL**: NEVER explain, analyze, judge, compliment, congratulate, or praise their previous answer. Just acknowledge briefly and ask the next question. Keep responses under 2 sentences.
+- Dont repeat questions if once answered in the same session."""
 
 @app.get("/", response_class=HTMLResponse)
 async def get_interview_page(request: Request):
     """Serve the main interview page"""
+    logger.info("🏠 Main page requested")
     return templates.TemplateResponse("interview.html", {"request": request})
+
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint"""
+    logger.info("🏥 Health check requested")
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "database_connected": db_manager.database is not None,
+        "sessions_in_memory": len(interview_sessions)
+    }
 
 @app.post("/start_interview")
 async def start_interview():
     """Start a new interview session"""
+    logger.info("🚀 START_INTERVIEW endpoint called!")
     global session_counter
     session_counter += 1
     session_id = str(session_counter)  # Simple: 1, 2, 3, etc.
+    logger.info(f"📝 Creating new session: {session_id}")
     session = InterviewSession(session_id)
     interview_sessions[session_id] = session
     
@@ -323,9 +366,12 @@ async def start_interview():
                 status="in_progress"
             )
             await db_manager.save_interview(interview_model)
-            logger.info(f"Interview session {session_id} saved to database")
+            logger.info(f"✅ Interview session {session_id} saved to database")
+        else:
+            logger.warning(f"⚠️ Database not connected - interview {session_id} only saved in memory")
     except Exception as e:
-        logger.error(f"Failed to save interview to database: {e}")
+        logger.error(f"❌ Failed to save interview to database: {e}")
+        logger.error(f"❌ Interview {session_id} will only exist in memory")
         # Continue with in-memory storage
     
     # Start with Mr. French introduction and first question
@@ -346,6 +392,8 @@ async def start_interview():
 @app.post("/chat")
 async def chat_with_interviewer(chat_message: ChatMessage):
     """Continue the interview conversation"""
+    logger.info(f"💬 CHAT endpoint called for session: {chat_message.session_id}")
+    logger.info(f"💬 User message: {chat_message.message[:100]}...")
     session_id = chat_message.session_id
     
     if not session_id:
@@ -378,6 +426,29 @@ async def chat_with_interviewer(chat_message: ChatMessage):
     
     # Add user's response to conversation history
     session.conversation_history.append({"role": "user", "content": chat_message.message})
+    
+    # Debug: Log conversation history state
+    logger.info(f"💬 Session {session_id} - User message added. Total messages: {len(session.conversation_history)}")
+    logger.info(f"💬 Last message: {session.conversation_history[-1]}")
+    
+    # Update database with user message immediately
+    try:
+        if db_manager.database is not None:
+            logger.info(f"🔄 Saving user message to database for session {session_id}")
+            ok = await db_manager.update_interview(session_id, {
+                "conversation_history": session.conversation_history
+            })
+            if not ok:
+                logger.warning(f"❌ Failed to save user message to database for session {session_id}")
+            else:
+                logger.info(f"✅ User message saved to database for session {session_id}")
+        else:
+            logger.warning(f"⚠️ Database not connected - user message only saved in memory for session {session_id}")
+    except Exception as e:
+        logger.error(f"❌ Error saving user message to database: {e}")
+        logger.error(f"❌ Full error: {str(e)}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
     # Guard: handle small-talk or project Qs without advancing the question index
     msg_type = is_smalltalk_or_project(chat_message.message)
@@ -436,12 +507,13 @@ async def chat_with_interviewer(chat_message: ChatMessage):
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",  # Faster for question generation
             messages=messages,
-            max_tokens=200,  # Shorter responses for speed
+            max_tokens=800,  # Increased for longer, more detailed responses
             temperature=0.7,
-            timeout=15.0  # Faster timeout for questions
+            timeout=30.0  # Increased timeout for longer responses
         )
         
         ai_message = sanitize_question(response.choices[0].message.content)
+        ai_message = neutralize_praise(ai_message)
         session.conversation_history.append({"role": "assistant", "content": ai_message})
         # Advance question index normally
         session.current_question_index += 1
@@ -449,14 +521,20 @@ async def chat_with_interviewer(chat_message: ChatMessage):
         # Update database (persist history and counters)
         try:
             if db_manager.database is not None:
+                logger.info(f"🔄 Updating database for session {session_id} - {len(session.conversation_history)} messages")
                 ok = await db_manager.update_interview(session_id, {
                     "conversation_history": session.conversation_history,
                     "questions_asked": session.current_question_index
                 })
                 if not ok:
-                    logger.warning(f"DB update returned false for session {session_id}")
+                    logger.warning(f"❌ DB update returned false for session {session_id}")
+                else:
+                    logger.info(f"✅ Database updated successfully for session {session_id}")
+            else:
+                logger.warning(f"⚠️ Database not connected - conversation not saved for session {session_id}")
         except Exception as e:
-            logger.error(f"Failed to update interview in database: {e}")
+            logger.error(f"❌ Failed to update interview in database: {e}")
+            logger.error(f"❌ Session {session_id} conversation will only exist in memory")
         
         # Check if interview should be completed (basic heuristic)
         auto_submitted = False
@@ -573,9 +651,9 @@ Extract all applicable behavior rules and guidance that meet the criteria above.
                 {"role": "system", "content": "You are an expert at extracting structured behavioral rules from conversational data. Always return valid JSON."},
                 {"role": "user", "content": extraction_prompt}
             ],
-            max_tokens=1400,
+            max_tokens=3000,  # Increased for comprehensive rule extraction
             temperature=0.3,
-            timeout=30.0  # Increase timeout to 30 seconds
+            timeout=60.0  # Increased timeout to 60 seconds for complex analysis
         )
         
         rules_content = response.choices[0].message.content
@@ -732,9 +810,9 @@ CONVERSATION:\n{conversation_text}
 
 If no applicable behavior rules exist, return []."""}
             ],
-            max_tokens=3000,  # More tokens for comprehensive analysis
+            max_tokens=4000,  # Increased for comprehensive analysis
             temperature=0.2,  # Lower temperature for more consistent, precise output
-            timeout=120.0  # 2 minutes for thorough analysis
+            timeout=180.0  # 3 minutes for thorough analysis
         )
         
         rules_content = response.choices[0].message.content.strip()
@@ -924,27 +1002,39 @@ async def get_sessions():
 @app.get("/session/{session_id}/conversation")
 async def get_conversation(session_id: str):
     """Get the full conversation history for a session"""
-    if session_id not in interview_sessions:
-        # Try DB
-        try:
-            if db_manager.database is not None:
-                interview = await db_manager.get_interview(session_id)
-                if interview:
-                    return {
-                        "session_id": session_id,
-                        "conversation": interview.conversation_history or [],
-                        "is_complete": interview.is_complete
-                    }
-        except Exception:
-            pass
-        raise HTTPException(status_code=404, detail="Session not found")
+    logger.info(f"🔍 Getting conversation for session: {session_id}")
     
-    session = interview_sessions[session_id]
-    return {
-        "session_id": session_id,
-        "conversation": session.conversation_history,
-        "is_complete": session.is_complete
-    }
+    # Check memory first
+    if session_id in interview_sessions:
+        session = interview_sessions[session_id]
+        logger.info(f"📝 Session {session_id} found in memory - {len(session.conversation_history)} messages")
+        return {
+            "session_id": session_id,
+            "conversation": session.conversation_history,
+            "is_complete": session.is_complete,
+            "source": "memory"
+        }
+    
+    # Try DB if not in memory
+    try:
+        if db_manager.database is not None:
+            interview = await db_manager.get_interview(session_id)
+            if interview:
+                logger.info(f"📝 Session {session_id} found in DB - {len(interview.conversation_history or [])} messages")
+                return {
+                    "session_id": session_id,
+                    "conversation": interview.conversation_history or [],
+                    "is_complete": interview.is_complete,
+                    "source": "database"
+                }
+            else:
+                logger.warning(f"❌ Session {session_id} not found in database")
+        else:
+            logger.warning(f"⚠️ Database not connected - cannot check for session {session_id}")
+    except Exception as e:
+        logger.error(f"❌ Error getting session from DB: {e}")
+    
+    raise HTTPException(status_code=404, detail="Session not found")
 
 # New database management endpoints
 @app.get("/database/status")
@@ -952,28 +1042,55 @@ async def get_database_status():
     """Get database connection status"""
     try:
         logger.info(f"Checking database status - db_manager.database: {db_manager.database}")
+        
+        # Check environment variables
+        env_status = {
+            "MONGODB_CONNECTION_STRING": os.getenv("MONGODB_CONNECTION_STRING", "NOT SET"),
+            "MONGODB_DATABASE_NAME": os.getenv("MONGODB_DATABASE_NAME", "NOT SET"),
+            "MONGODB_INTERVIEWS_COLLECTION": os.getenv("MONGODB_INTERVIEWS_COLLECTION", "NOT SET"),
+            "MONGODB_RULES_COLLECTION": os.getenv("MONGODB_RULES_COLLECTION", "NOT SET")
+        }
+        
         if db_manager.database is not None:
             # Test connection
             logger.info("Testing database ping...")
             await db_manager.database.command("ping")
             logger.info("Database ping successful")
+            
+            # Get collection counts
+            interviews_count = await db_manager.interviews_collection.count_documents({})
+            rules_count = await db_manager.rules_collection.count_documents({})
+            
             return {
                 "connected": True,
                 "database_name": db_manager.database.name,
-                "message": "Database connection is healthy"
+                "message": "Database connection is healthy",
+                "collections": {
+                    "interviews": interviews_count,
+                    "rules": rules_count
+                },
+                "environment": env_status
             }
         else:
-            logger.warning("Database is None")
+            logger.warning("Database is None - connection failed")
             return {
                 "connected": False,
-                "message": "Database not connected"
+                "message": "Database not connected - check startup logs",
+                "environment": env_status,
+                "troubleshooting": [
+                    "Check MONGODB_CONNECTION_STRING environment variable",
+                    "Verify MongoDB server is running and accessible",
+                    "Check network connectivity to MongoDB",
+                    "Review application startup logs for connection errors"
+                ]
             }
     except Exception as e:
         logger.error(f"Database status check failed: {e}")
         return {
             "connected": False,
             "error": str(e),
-            "message": "Database connection failed"
+            "message": "Database connection failed",
+            "environment": env_status
         }
 
 @app.get("/database/rules")
@@ -1106,4 +1223,8 @@ async def get_processing_status(session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    print("🚀 Starting FastAPI server...")
+    print("🌐 Binding to: 0.0.0.0:8000")
+    print("🔗 Local access: http://localhost:8000")
+    print("🔗 Network access: http://YOUR_IP:8000")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

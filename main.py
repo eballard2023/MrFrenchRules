@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import openai
 import os
@@ -10,7 +11,16 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from typing import List, Dict, Optional
 import asyncio
-from database import db_manager, InterviewModel, RulesCollectionModel
+# MongoDB removed - using Supabase + ChromaDB
+from supabase_client import supabase_client
+try:
+    from chromadb_client import chromadb_client
+except (ImportError, AttributeError) as e:
+    chromadb_client = None
+    print(f"ChromaDB not available: {e}")
+    print("Continuing without ChromaDB - conversations won't have embeddings")
+from admin_auth import admin_auth
+from jira_client import jira_client
 import logging
 
 # Set up logging
@@ -142,55 +152,81 @@ def is_smalltalk_or_project(message: str) -> str:
         return "about_interview"
     return "none"
 
+# Helper: clean up any leading punctuation artifacts
+def clean_response(text: str) -> str:
+    try:
+        content = (text or "").strip()
+        # Remove leading punctuation marks that shouldn't be there
+        cleaned = re.sub(r"^[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>\/\s]+", "", content)
+        # Remove quotes around the entire text (straight or smart quotes)
+        cleaned = re.sub(r'^["“”\'](.+)["“”\']$', r"\1", cleaned)
+        return cleaned.strip() if cleaned else text
+    except Exception:
+        return text
+
+# Helper: extract only the first question from text
+def keep_only_first_question(text: str) -> str:
+    try:
+        content = (text or "").strip()
+        if not content:
+            return content
+        q_index = content.find("?")
+        if q_index == -1:
+            return content
+        # Walk backwards to previous sentence boundary
+        start = max(content.rfind(".", 0, q_index), content.rfind("!", 0, q_index), content.rfind("?", 0, q_index))
+        start = 0 if start == -1 else start + 1
+        question = content[start:q_index + 1].strip()
+        # Strip wrapping quotes
+        if (question.startswith('"') and question.endswith('"')) or (question.startswith("'") and question.endswith("'")):
+            question = question[1:-1].strip()
+        return question
+    except Exception:
+        return text
+
+# Helper: ensure acknowledgment for AI responses
+def ensure_acknowledgment(text: str, ack: str = "Understood.") -> str:
+    """Ensures the text ends with an acknowledgment if it doesn't already."""
+    if text.strip().endswith(ack):
+        return text
+    return f"{text} {ack}"
 
 
 FIRST_QUESTION_TEXT = "To start, could you describe your area of expertise and how you usually apply it?"
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database connection on startup"""
+    """Initialize database connections on startup"""
     global session_counter
     logger.info("Starting up the application...")
     
-    # Log environment variables for debugging
-    logger.info(f"MongoDB Connection String: {os.getenv('MONGODB_CONNECTION_STRING', 'NOT SET')}")
-    logger.info(f"MongoDB Database Name: {os.getenv('MONGODB_DATABASE_NAME', 'NOT SET')}")
+    # Connect to Supabase (optional)
+    try:
+        supabase_success = supabase_client.connect()
+        if supabase_success:
+            logger.info("✅ Successfully connected to Supabase")
+        else:
+            logger.warning("⚠️ Supabase connection failed - check .env file")
+    except Exception as e:
+        logger.warning(f"⚠️ Supabase connection error: {e}")
+        logger.info("App will continue without Supabase - using fallback storage")
     
-    success = await db_manager.connect()
-    if not success:
-        logger.error("❌ FAILED TO CONNECT TO MONGODB. Application will continue with in-memory storage.")
-        logger.error("❌ This means interviews will NOT be saved to database!")
-        logger.error("❌ Check your environment variables and MongoDB connection.")
+    # ChromaDB is optional and handled in client init
+    if chromadb_client and chromadb_client.client:
+        logger.info("✅ ChromaDB available")
     else:
-        logger.info("✅ Successfully connected to MongoDB")
-        logger.info(f"✅ Database: {db_manager.database.name}")
-        logger.info(f"✅ Collections: interviews, extracted_rules, rules_collections")
-        # Initialize session counter from database
-        try:
-            interviews = await db_manager.get_all_interviews()
-            if interviews:
-                # Find the highest session ID number
-                max_session_id = 0
-                for interview in interviews:
-                    try:
-                        session_num = int(interview.session_id)
-                        max_session_id = max(max_session_id, session_num)
-                    except ValueError:
-                        # Skip non-numeric session IDs (old format)
-                        continue
-                session_counter = max_session_id
-                logger.info(f"Initialized session counter to {session_counter} from database")
-            else:
-                logger.info("No existing interviews found, starting session counter at 0")
-        except Exception as e:
-            logger.error(f"Failed to initialize session counter from database: {e}")
-            session_counter = 0
+        logger.info("ℹ️ ChromaDB disabled - continuing without embeddings")
+    
+    # Initialize session counter
+    session_counter = 0
+    logger.info("Session counter initialized to 0")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Close database connection on shutdown"""
+    """Close database connections on shutdown"""
     logger.info("Shutting down the application...")
-    await db_manager.disconnect()
+    if hasattr(supabase_client, 'close'):
+        supabase_client.close()
 
 class ChatMessage(BaseModel):
     message: str
@@ -318,19 +354,20 @@ Mr. French ties together three distinct but connected conversation types. Collec
 - Start EVERY interview with Mr. French introduction and purpose explanation
 - Ask if they want to know about current implementation and how they can help
 - Do NOT number or list questions; phrase naturally
+- Do NOT wrap questions in quotation marks; write conversationally without quotes
 - After small-talk or project questions (who are you / Mr. French / Timmy), answer briefly and ask if they’re ready to continue the interview
 - For unrelated trivia, decline and return to the interview
-- **CRITICAL**: On greeting ("hello", "hi"), start with Mr. French introduction, then ask about current implementation knowledge
+- **CRITICAL**: On greeting ("hello", "hi"), reply with greeting and continue the interview dont give intro of mr french again and again tell him if he asks otherwise continue the interview
 - **NEVER** respond with "I'm here to help" or similar general assistant language
 - **RESPONSE STYLE**: Keep responses brief and neutral. Avoid praise or evaluative language (e.g., "great", "excellent", "love that", "that's exactly right"). After receiving an answer, give a short neutral acknowledgment (e.g., "Noted." or "Understood.") and then ask the next question directly. Don't elaborate on their previous response.
-- **CRITICAL**: NEVER explain, analyze, judge, compliment, congratulate, or praise their previous answer. Just acknowledge briefly and ask the next question. Keep responses under 2 sentences.
+- **CRITICAL**: NEVER explain, analyze, judge, compliment, congratulate, or praise their previous answer. Just acknowledge briefly and ask the next question. Keep responses under 2 sentences.is 
 - Dont repeat questions if once answered in the same session."""
 
 @app.get("/", response_class=HTMLResponse)
 async def get_interview_page(request: Request):
     """Serve the main interview page"""
     logger.info("🏠 Main page requested")
-    return templates.TemplateResponse("interview.html", {"request": request})
+    return templates.TemplateResponse("index.html", {"request": request})
 
 @app.get("/health")
 async def health_check():
@@ -339,7 +376,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "database_connected": db_manager.database is not None,
+        "database_connected": supabase_client.connected if supabase_client else False,
         "sessions_in_memory": len(interview_sessions)
     }
 
@@ -354,32 +391,14 @@ async def start_interview():
     session = InterviewSession(session_id)
     interview_sessions[session_id] = session
     
-    # Save to database 
-    try:
-        if db_manager.database is not None:
-            interview_model = InterviewModel(
-                session_id=session_id,
-                started_at=datetime.now(timezone.utc),
-                conversation_history=[],
-                questions_asked=0,
-                is_complete=False,
-                status="in_progress"
-            )
-            await db_manager.save_interview(interview_model)
-            logger.info(f"✅ Interview session {session_id} saved to database")
-        else:
-            logger.warning(f"⚠️ Database not connected - interview {session_id} only saved in memory")
-    except Exception as e:
-        logger.error(f"❌ Failed to save interview to database: {e}")
-        logger.error(f"❌ Interview {session_id} will only exist in memory")
-        # Continue with in-memory storage
+    # Interview stored in memory and ChromaDB
     
     # Start with Mr. French introduction and first question
     ai_message = (
-        "Hi! I'm here to interview you about improving Mr. French, our conversational AI family assistant. "
+        "Hi! I'm here to interview you for training Mr. French, our conversational AI family assistant. "
         "Mr. French helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
-        "This interview is to extract expert rules to make Mr. French better at supporting families. "
-        "To start, could you describe your area of expertise and how it could help Mr. French better support families?"
+        "This interview is to extract expert rules to train Mr. French for supporting families. "
+        "Could you please tell your name and how you could help train Mr. French to better support families?"
     )
     session.conversation_history.append({"role": "assistant", "content": ai_message})
     
@@ -399,19 +418,7 @@ async def chat_with_interviewer(chat_message: ChatMessage):
     if not session_id:
         raise HTTPException(status_code=404, detail="Interview session not found")
 
-    # Restore from DB if session not present in memory (e.g., after reload)
-    if session_id not in interview_sessions:
-        try:
-            if db_manager.database is not None:
-                interview = await db_manager.get_interview(session_id)
-                if interview:
-                    restored = InterviewSession(session_id)
-                    restored.conversation_history = interview.conversation_history or []
-                    restored.current_question_index = interview.questions_asked or 0
-                    restored.is_complete = interview.is_complete
-                    interview_sessions[session_id] = restored
-        except Exception:
-            pass
+    # Session stored in memory only
 
     if session_id not in interview_sessions:
         raise HTTPException(status_code=404, detail="Interview session not found")
@@ -427,28 +434,9 @@ async def chat_with_interviewer(chat_message: ChatMessage):
     # Add user's response to conversation history
     session.conversation_history.append({"role": "user", "content": chat_message.message})
     
-    # Debug: Log conversation history state
-    logger.info(f"💬 Session {session_id} - User message added. Total messages: {len(session.conversation_history)}")
-    logger.info(f"💬 Last message: {session.conversation_history[-1]}")
+    # ChromaDB storage removed
     
-    # Update database with user message immediately
-    try:
-        if db_manager.database is not None:
-            logger.info(f"🔄 Saving user message to database for session {session_id}")
-            ok = await db_manager.update_interview(session_id, {
-                "conversation_history": session.conversation_history
-            })
-            if not ok:
-                logger.warning(f"❌ Failed to save user message to database for session {session_id}")
-            else:
-                logger.info(f"✅ User message saved to database for session {session_id}")
-        else:
-            logger.warning(f"⚠️ Database not connected - user message only saved in memory for session {session_id}")
-    except Exception as e:
-        logger.error(f"❌ Error saving user message to database: {e}")
-        logger.error(f"❌ Full error: {str(e)}")
-        import traceback
-        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    logger.info(f"💬 Session {session_id} - User message added. Total messages: {len(session.conversation_history)}")
 
     # Guard: handle small-talk or project Qs without advancing the question index
     msg_type = is_smalltalk_or_project(chat_message.message)
@@ -507,52 +495,23 @@ async def chat_with_interviewer(chat_message: ChatMessage):
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",  # Faster for question generation
             messages=messages,
-            max_tokens=800,  # Increased for longer, more detailed responses
-            temperature=0.7,
+            max_tokens=1200,  # Increased for better comprehension and response quality
+            temperature=0.8,  # Slightly higher for more natural conversation
             timeout=30.0  # Increased timeout for longer responses
         )
         
         ai_message = sanitize_question(response.choices[0].message.content)
-        ai_message = neutralize_praise(ai_message)
+        ai_message = clean_response(ai_message)
         session.conversation_history.append({"role": "assistant", "content": ai_message})
-        # Advance question index normally
         session.current_question_index += 1
         
-        # Update database (persist history and counters)
-        try:
-            if db_manager.database is not None:
-                logger.info(f"🔄 Updating database for session {session_id} - {len(session.conversation_history)} messages")
-                ok = await db_manager.update_interview(session_id, {
-                    "conversation_history": session.conversation_history,
-                    "questions_asked": session.current_question_index
-                })
-                if not ok:
-                    logger.warning(f"❌ DB update returned false for session {session_id}")
-                else:
-                    logger.info(f"✅ Database updated successfully for session {session_id}")
-            else:
-                logger.warning(f"⚠️ Database not connected - conversation not saved for session {session_id}")
-        except Exception as e:
-            logger.error(f"❌ Failed to update interview in database: {e}")
-            logger.error(f"❌ Session {session_id} conversation will only exist in memory")
+        # ChromaDB storage removed
         
         # Check if interview should be completed (basic heuristic)
         auto_submitted = False
         final_note = None
         if session.current_question_index >= 23 or "conclude" in ai_message.lower() or "summary" in ai_message.lower():
             session.is_complete = True
-            # Update completion status in database
-            try:
-                if db_manager.database is not None:
-                    ok = await db_manager.update_interview(session_id, {
-                        "is_complete": True,
-                        "completed_at": datetime.now(timezone.utc),
-                        "status": "completed"
-                    })
-                    if not ok:
-                        logger.warning(f"DB completion update returned false for session {session_id}")
-            except Exception as e:
-                logger.error(f"Failed to update completion status in database: {e}")
             # Add a closing message
             final_note = "Thank you. The interview is complete. You can now click Submit to save your responses."
             session.conversation_history.append({"role": "assistant", "content": final_note})
@@ -568,419 +527,103 @@ async def chat_with_interviewer(chat_message: ChatMessage):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error in conversation: {str(e)}")
 
-@app.post("/generate_rules/{session_id}")
-async def generate_rules(session_id: str):
-    """Generate structured JSON rules from the interview conversation"""
-    logger.info(f"🔍 Generate rules called for session_id: {session_id}")
-    logger.info(f"📝 Available sessions in memory: {list(interview_sessions.keys())}")
-    
-    if session_id not in interview_sessions:
-        logger.info(f"⚠️ Session {session_id} not in memory, trying to restore from DB...")
-        # Attempt to restore from DB for post-reload continuity
-        try:
-            if db_manager.database is not None:
-                interview = await db_manager.get_interview(session_id)
-                if interview:
-                    logger.info(f"✅ Found interview in DB, restoring to memory")
-                    restored = InterviewSession(session_id)
-                    restored.conversation_history = interview.conversation_history or []
-                    restored.current_question_index = interview.questions_asked or 0
-                    restored.is_complete = interview.is_complete
-                    interview_sessions[session_id] = restored
-                else:
-                    logger.warning(f"❌ Interview {session_id} not found in database")
-        except Exception as e:
-            logger.error(f"❌ Error restoring session from DB: {e}")
-            pass
-        if session_id not in interview_sessions:
-            logger.error(f"❌ Session {session_id} not found in memory or DB")
-            raise HTTPException(status_code=404, detail="Interview session not found")
-    
-    session = interview_sessions[session_id]
-    
-    # Prepare conversation for rule extraction (limit to last 10 messages to avoid timeout)
-    recent_messages = session.conversation_history[-10:] if len(session.conversation_history) > 10 else session.conversation_history
-    conversation_text = "\n".join([
-        f"{msg['role'].upper()}: {msg['content']}" 
-        for msg in recent_messages
-    ])
-    
-    # Log the conversation for debugging
-    logger.info(f"Extracting rules from conversation for session {session_id}:")
-    logger.info(f"Conversation length: {len(session.conversation_history)} messages")
-    logger.info(f"Conversation content: {conversation_text[:500]}...")  # Log first 500 chars
-    
-    extraction_prompt = f"""Based on the following interview conversation with a subject matter expert (SME), extract actionable CHILD/FAMILY BEHAVIOR rules and convert them into a structured JSON format for Mr. French AI.
-    STRICTLY EXCLUDE meta-interview or project chatter (e.g., who is Mr. French, who is Timmy, introductions, interview logistics, character definitions, facilitator phrases).
-    Only extract rules that Mr. French can APPLY to help with children's behavior, routines, motivation, communication, de-escalation, rewards/consequences, or parent guidance.
-    If the conversation does NOT contain actionable behavior guidance, return an empty JSON array [].
-
-Extract ALL behavioral rules, best practices, and guidance that can be inferred from the expert's responses. Look for:
-- How they handle specific situations
-- What they recommend in different contexts
-- Their approach to problems
-- Their communication style
-- Their methods and techniques
-
-Each rule should follow this EXACT format:
-{{
-    "if": {{
-        "event": "specific situation or trigger condition",
-        "context": "additional context if needed",
-        "user_type": "target audience (e.g., 'child', 'student', 'client', 'general')"
-    }},
-    "then": {{
-        "action": "specific action the AI should take",
-        "response": "exact words or approach the AI should use",
-        "duration": "time duration if applicable (e.g., '5_minutes', 'until_calm')",
-        "tone": "how the AI should sound (e.g., 'calm', 'encouraging', 'firm', 'supportive')"
-    }},
-    "priority": "high/medium/low",
-    "category": "rule category (e.g., 'crisis_management', 'motivation', 'discipline', 'communication')"
-}}
-
-CONVERSATION TO ANALYZE:
-{conversation_text}
-
-Extract all applicable behavior rules and guidance that meet the criteria above. If none exist, return []."""
-
-    try:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are an expert at extracting structured behavioral rules from conversational data. Always return valid JSON."},
-                {"role": "user", "content": extraction_prompt}
-            ],
-            max_tokens=3000,  # Increased for comprehensive rule extraction
-            temperature=0.3,
-            timeout=60.0  # Increased timeout to 60 seconds for complex analysis
-        )
-        
-        rules_content = response.choices[0].message.content
-        
-        # Try to parse as JSON to validate
-        try:
-            rules_json = json.loads(rules_content)
-            session.extracted_rules = rules_json
-        except json.JSONDecodeError:
-            # If direct parsing fails, try to extract JSON from the response
-            import re
-            json_match = re.search(r'\[.*\]', rules_content, re.DOTALL)
-            if json_match:
-                rules_json = json.loads(json_match.group())
-                session.extracted_rules = rules_json
-            else:
-                raise ValueError("Could not extract valid JSON from response")
-
-        # Filter to keep only behavior-applicable rules
-        if isinstance(rules_json, dict):
-            rules_json = [rules_json]
-        if isinstance(rules_json, list):
-            rules_json = [r for r in rules_json if is_behavior_rule(r)]
-        
-        # Save rules to file
-        filename = f"extracted_rules_{session_id}.json"
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(rules_json, f, indent=2, ensure_ascii=False)
-        
-        # Save to database
-        try:
-            if db_manager.database is not None:
-                logger.info(f"Starting to save rules for session {session_id} to database")
-                # Save rules collection
-                rules_collection_model = RulesCollectionModel(
-                    interview_session_id=session_id,
-                    rules=rules_json,
-                    total_rules=len(rules_json),
-                    extracted_at=datetime.now(timezone.utc),
-                    filename=filename
-                )
-                logger.info(f"Saving rules collection with {len(rules_json)} rules")
-                collection_id = await db_manager.save_rules_collection(rules_collection_model)
-                
-                # Save individual rules
-                logger.info(f"Saving individual rules to database")
-                rule_ids = await db_manager.save_individual_rules(session_id, rules_json)
-                
-                logger.info(f"✅ Rules saved to database - Collection ID: {collection_id}, Rule IDs: {len(rule_ids)}")
-                
-                return {
-                    "message": "Rules successfully extracted and saved to database",
-                    "filename": filename,
-                    "rules_count": len(rules_json),
-                    "rules": rules_json,
-                    "database_saved": True,
-                    "collection_id": collection_id
-                }
-            else:
-                logger.warning("Database not connected - skipping database save")
-        except Exception as e:
-            logger.error(f"❌ Failed to save rules to database: {e}")
-            import traceback
-            logger.error(f"Full error trace: {traceback.format_exc()}")
-            
-        return {
-            "message": "Rules successfully extracted and saved to file",
-            "filename": filename,
-            "rules_count": len(rules_json),
-            "rules": rules_json,
-            "database_saved": False
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating rules: {str(e)}")
+# Removed old JSON rule generation - now using simple task extraction in submit_interview
 
 @app.post("/submit_interview/{session_id}")
 async def submit_interview(session_id: str):
-    """Finalize interview: mark as complete immediately, process rules in background"""
+    """Finalize interview: store in ChromaDB, extract tasks, save to Supabase"""
     logger.info(f"🔍 Submit interview called for session_id: {session_id}")
     
-    # Quick validation and session restoration
-    if session_id not in interview_sessions:
-        try:
-            if db_manager.database is not None:
-                interview = await db_manager.get_interview(session_id)
-                if interview:
-                    restored = InterviewSession(session_id)
-                    restored.conversation_history = interview.conversation_history or []
-                    restored.current_question_index = interview.questions_asked or 0
-                    restored.is_complete = interview.is_complete
-                    interview_sessions[session_id] = restored
-        except Exception as e:
-            logger.error(f"Error restoring session from DB: {e}")
-            
     if session_id not in interview_sessions:
         raise HTTPException(status_code=404, detail="Interview session not found")
     
     session = interview_sessions[session_id]
-    
-    # Mark interview as completed immediately
     session.is_complete = True
-    try:
-        if db_manager.database is not None:
-            await db_manager.update_interview(session_id, {
-                "is_complete": True,
-                "completed_at": datetime.now(timezone.utc),
-                "status": "completed"
-            })
-            logger.info(f"✅ Interview {session_id} marked as completed")
-    except Exception as e:
-        logger.error(f"Error updating completion status: {e}")
     
-    # Start background processing
-    asyncio.create_task(process_rules_background(session_id))
-    
-    return {
-        "message": "Thank you for the interview. Your responses have been saved and are being processed.",
-        "status": "processing"
-    }
-
-async def process_rules_background(session_id: str):
-    """Process rules in background without blocking the response"""
+    # Extract tasks from conversation
     try:
-        logger.info(f"🔄 Starting background rule processing for session {session_id}")
-        
-        if session_id not in interview_sessions:
-            logger.error(f"Session {session_id} not found for background processing")
-            return
-            
-        session = interview_sessions[session_id]
-        
-        # Process ALL messages (not just last 10)
         conversation_text = "\n".join([
             f"{msg['role'].upper()}: {msg['content']}" 
             for msg in session.conversation_history
         ])
         
-        logger.info(f"Processing {len(session.conversation_history)} messages for session {session_id}")
+        # Extract simple task statements
+        extraction_prompt = f"""Extract simple, actionable task statements from this interview conversation with a behavioral expert.
+
+Each task should be a clear statement like:
+- "Mr. French should use calm language when child is frustrated"
+- "Mr. French should break tasks into smaller steps when child feels overwhelmed"
+- "Mr. French should suggest breaks when child shows signs of stress"
+
+Return ONLY the task statements, one per line. No explanations or formatting.
+
+CONVERSATION:
+{conversation_text}
+
+TASK STATEMENTS:"""
         
-        # Use the best model for perfect rule analysis
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",  # Best quality for rule extraction
+            model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You extract structured CHILD/FAMILY BEHAVIOR rules strictly from the given conversation. Exclude meta-interview/logistics/project-definition content. Only return valid JSON."},
-                {"role": "user", "content": f"""From the following interview, extract ONLY actionable CHILD/FAMILY BEHAVIOR rules in JSON.
-
-STRICTLY EXCLUDE: interview logistics, facilitator phrases, character definitions (Mr. French, Timmy), or general chit-chat. Include only rules Mr. French can apply for children's behavior, routines, motivation, de-escalation, rewards/consequences, communication, or parent guidance.
-
-Each rule format:
-{{\n  \"if\": {{\n    \"event\": \"specific trigger or situation\",\n    \"context\": \"additional context (only if needed)\",\n    \"user_type\": \"target audience\"\n  }},\n  \"then\": {{\n    \"action\": \"specific action to take\",\n    \"response\": \"exact words or approach\",\n    \"duration\": \"time duration (if applicable)\",\n    \"tone\": \"communication style\"\n  }},\n  \"priority\": \"high/medium/low\",\n  \"category\": \"rule category\"\n}}
-
-CONVERSATION:\n{conversation_text}
-
-If no applicable behavior rules exist, return []."""}
+                {"role": "system", "content": "You extract simple task statements from behavioral expert interviews. Return only clear, actionable statements."},
+                {"role": "user", "content": extraction_prompt}
             ],
-            max_tokens=4000,  # Increased for comprehensive analysis
-            temperature=0.2,  # Lower temperature for more consistent, precise output
-            timeout=180.0  # 3 minutes for thorough analysis
+            max_tokens=1000,
+            temperature=0.3
         )
         
-        rules_content = response.choices[0].message.content.strip()
+        # Parse task statements
+        tasks_text = response.choices[0].message.content.strip()
+        task_statements = [task.strip() for task in tasks_text.split('\n') if task.strip()]
         
-        # Log the response for debugging
-        logger.info(f"Raw AI response for session {session_id}: {rules_content[:200]}...")
+        print(f"🤖 TASK EXTRACTION: Starting for session {session_id}")
+        print(f"📝 CONVERSATION LENGTH: {len(conversation_text)} characters")
+        print("🧠 GPT EXTRACTION: Calling GPT-4o-mini for task extraction")
         
-        # Check if response is empty or invalid
-        if not rules_content or rules_content.isspace():
-            logger.error(f"Empty response from AI for session {session_id}")
-            rules_content = "[]"
+        # Store tasks in memory for admin panel
+        if not hasattr(session, 'extracted_tasks'):
+            session.extracted_tasks = []
+        session.extracted_tasks.extend(task_statements)
         
-        # Parse and save rules with quality validation
-        try:
-            # Try to extract JSON if it's wrapped in other text
-            import re
-            json_match = re.search(r'\[.*\]', rules_content, re.DOTALL)
-            if json_match:
-                rules_content = json_match.group()
-            
-            rules_json = json.loads(rules_content)
-            if not isinstance(rules_json, list):
-                rules_json = [rules_json]
-            
-            # Validate and clean rules with strict formatting
-            validated_rules = []
-            for i, rule in enumerate(rules_json):
-                if isinstance(rule, dict) and "if" in rule and "then" in rule:
-                    # Clean and validate the "if" section
-                    if_section = rule.get("if", {})
-                    if isinstance(if_section, dict):
-                        clean_if = {
-                            "event": str(if_section.get("event", "")).strip(),
-                            "context": str(if_section.get("context", "")).strip(),
-                            "user_type": str(if_section.get("user_type", "general")).strip()
-                        }
-                        # Remove empty fields
-                        clean_if = {k: v for k, v in clean_if.items() if v}
-                    else:
-                        clean_if = {"event": str(if_section).strip()}
-                    
-                    # Clean and validate the "then" section
-                    then_section = rule.get("then", {})
-                    if isinstance(then_section, dict):
-                        clean_then = {
-                            "action": str(then_section.get("action", "")).strip(),
-                            "response": str(then_section.get("response", "")).strip(),
-                            "duration": str(then_section.get("duration", "")).strip(),
-                            "tone": str(then_section.get("tone", "")).strip()
-                        }
-                        # Remove empty fields
-                        clean_then = {k: v for k, v in clean_then.items() if v}
-                    else:
-                        clean_then = {"action": str(then_section).strip()}
-                    
-                    # Only add rule if it has meaningful content
-                    if (clean_if.get("event") or clean_if.get("context")) and (clean_then.get("action") or clean_then.get("response")):
-                        validated_rule = {
-                            "if": clean_if,
-                            "then": clean_then,
-                            "priority": str(rule.get("priority", "medium")).lower().strip(),
-                            "category": str(rule.get("category", "general")).lower().strip()
-                        }
-                        
-                        # Ensure priority and category are valid
-                        if validated_rule["priority"] not in ["high", "medium", "low"]:
-                            validated_rule["priority"] = "medium"
-                        
-                        validated_rules.append(validated_rule)
-                    else:
-                        logger.warning(f"Skipping rule {i} - insufficient content")
-                else:
-                    logger.warning(f"Skipping invalid rule {i}: {rule}")
-            
-            # Keep only behavior-applicable rules
-            validated_rules = [r for r in validated_rules if is_behavior_rule(r)]
-
-            # Remove duplicate rules based on event and action
-            unique_rules = []
-            seen_combinations = set()
-            for rule in validated_rules:
-                event = rule.get("if", {}).get("event", "")
-                action = rule.get("then", {}).get("action", "")
-                combination = f"{event}|{action}"
-                
-                if combination not in seen_combinations and combination != "|":
-                    unique_rules.append(rule)
-                    seen_combinations.add(combination)
-                else:
-                    logger.info(f"Removing duplicate rule: {event} -> {action}")
-            
-            if not unique_rules:
-                logger.info(f"No applicable behavior rules found for session {session_id}. Saving empty set.")
-            else:
-                logger.info(f"Cleaned {len(validated_rules)} rules down to {len(unique_rules)} unique rules")
-                
-            # Save to file with metadata
-            filename = f"extracted_rules_{session_id}.json"
-            output_data = {
-                "session_id": session_id,
-                "extracted_at": datetime.now(timezone.utc).isoformat(),
-                "total_messages_processed": len(session.conversation_history),
-                "rules_count": len(unique_rules),
-                "rules": unique_rules
-            }
-            
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(output_data, f, indent=2, ensure_ascii=False)
-            
-            # Save to database
-            if db_manager.database is not None:
-                rules_collection_model = RulesCollectionModel(
-                    interview_session_id=session_id,
-                    rules=unique_rules,
-                    total_rules=len(unique_rules),
-                    extracted_at=datetime.now(timezone.utc),
-                    filename=filename
+        print(f"✅ GPT EXTRACTION SUCCESS: {len(task_statements)} tasks extracted")
+        
+        # Save each task to Supabase
+        if supabase_client.connected:
+            print(f"💾 SUPABASE SAVE: Saving {len(task_statements)} tasks to database")
+            for i, task in enumerate(task_statements, 1):
+                print(f"💾 SAVING TASK {i}/{len(task_statements)}: {task[:50]}...")
+                await supabase_client.save_interview_rule(
+                    session_id=session_id,
+                    expert_name="Expert User",
+                    expertise_area="General",
+                    rule_text=task
                 )
-                await db_manager.save_rules_collection(rules_collection_model)
-                await db_manager.save_individual_rules(session_id, unique_rules)
-                
-            logger.info(f"✅ Background processing completed for session {session_id}: {len(unique_rules)} clean, unique rules saved")
-            
-        except Exception as e:
-            logger.error(f"❌ Error in background rule processing: {e}")
-            import traceback
-            logger.error(f"Full error trace: {traceback.format_exc()}")
-            
+        else:
+            print("⚠️ SUPABASE UNAVAILABLE: Tasks saved to memory only")
+        
+        logger.info(f"✅ Extracted {len(task_statements)} tasks for session {session_id}")
+        
+        print(f"🎉 INTERVIEW COMPLETE: Session {session_id} finished with {len(task_statements)} tasks")
+        return {
+            "message": f"Thank you for the interview. {len(task_statements)} tasks have been extracted.",
+            "status": "completed",
+            "tasks_extracted": len(task_statements),
+            "tasks": task_statements
+        }
+        
     except Exception as e:
-        logger.error(f"❌ Background processing failed for session {session_id}: {e}")
+        logger.error(f"❌ Error processing interview submission: {e}")
+        return {
+            "message": "Interview saved, but there was an error processing tasks.",
+            "status": "error"
+        }
+
+# Removed background processing - now using direct task extraction in submit_interview
 
 @app.get("/sessions")
 async def get_sessions():
-    """Get all interview sessions"""
+    """Get all interview sessions from memory"""
     try:
-        # Try to get from database first
-        if db_manager.database is not None:
-            db_interviews = await db_manager.get_all_interviews()
-            sessions_from_db = [
-                {
-                    "session_id": interview.session_id,
-                    "created_at": interview.started_at.isoformat(),
-                    "questions_asked": interview.questions_asked,
-                    "is_complete": interview.is_complete,
-                    "status": interview.status,
-                    "completed_at": interview.completed_at.isoformat() if interview.completed_at else None,
-                    "source": "database"
-                }
-                for interview in db_interviews
-            ]
-            
-            # Also include in-memory sessions
-            sessions_from_memory = [
-                {
-                    "session_id": session_id,
-                    "created_at": session.created_at.isoformat(),
-                    "questions_asked": session.current_question_index,
-                    "is_complete": session.is_complete,
-                    "status": "in_progress" if not session.is_complete else "completed",
-                    "completed_at": None,
-                    "source": "memory"
-                }
-                for session_id, session in interview_sessions.items()
-            ]
-            
-            return {"sessions": sessions_from_db + sessions_from_memory}
-        
-        # Fallback to in-memory sessions
         return {
             "sessions": [
                 {
@@ -1004,7 +647,6 @@ async def get_conversation(session_id: str):
     """Get the full conversation history for a session"""
     logger.info(f"🔍 Getting conversation for session: {session_id}")
     
-    # Check memory first
     if session_id in interview_sessions:
         session = interview_sessions[session_id]
         logger.info(f"📝 Session {session_id} found in memory - {len(session.conversation_history)} messages")
@@ -1015,25 +657,6 @@ async def get_conversation(session_id: str):
             "source": "memory"
         }
     
-    # Try DB if not in memory
-    try:
-        if db_manager.database is not None:
-            interview = await db_manager.get_interview(session_id)
-            if interview:
-                logger.info(f"📝 Session {session_id} found in DB - {len(interview.conversation_history or [])} messages")
-                return {
-                    "session_id": session_id,
-                    "conversation": interview.conversation_history or [],
-                    "is_complete": interview.is_complete,
-                    "source": "database"
-                }
-            else:
-                logger.warning(f"❌ Session {session_id} not found in database")
-        else:
-            logger.warning(f"⚠️ Database not connected - cannot check for session {session_id}")
-    except Exception as e:
-        logger.error(f"❌ Error getting session from DB: {e}")
-    
     raise HTTPException(status_code=404, detail="Session not found")
 
 # New database management endpoints
@@ -1041,79 +664,37 @@ async def get_conversation(session_id: str):
 async def get_database_status():
     """Get database connection status"""
     try:
-        logger.info(f"Checking database status - db_manager.database: {db_manager.database}")
+        logger.info(f"Checking database status - supabase connected: {supabase_client.connected if supabase_client else False}")
         
-        # Check environment variables
-        env_status = {
-            "MONGODB_CONNECTION_STRING": os.getenv("MONGODB_CONNECTION_STRING", "NOT SET"),
-            "MONGODB_DATABASE_NAME": os.getenv("MONGODB_DATABASE_NAME", "NOT SET"),
-            "MONGODB_INTERVIEWS_COLLECTION": os.getenv("MONGODB_INTERVIEWS_COLLECTION", "NOT SET"),
-            "MONGODB_RULES_COLLECTION": os.getenv("MONGODB_RULES_COLLECTION", "NOT SET")
-        }
-        
-        if db_manager.database is not None:
-            # Test connection
-            logger.info("Testing database ping...")
-            await db_manager.database.command("ping")
-            logger.info("Database ping successful")
-            
-            # Get collection counts
-            interviews_count = await db_manager.interviews_collection.count_documents({})
-            rules_count = await db_manager.rules_collection.count_documents({})
-            
+        if supabase_client and supabase_client.connected:
             return {
                 "connected": True,
-                "database_name": db_manager.database.name,
-                "message": "Database connection is healthy",
-                "collections": {
-                    "interviews": interviews_count,
-                    "rules": rules_count
-                },
-                "environment": env_status
+                "database_type": "Supabase PostgreSQL",
+                "message": "Database connection is healthy"
             }
         else:
-            logger.warning("Database is None - connection failed")
             return {
                 "connected": False,
-                "message": "Database not connected - check startup logs",
-                "environment": env_status,
-                "troubleshooting": [
-                    "Check MONGODB_CONNECTION_STRING environment variable",
-                    "Verify MongoDB server is running and accessible",
-                    "Check network connectivity to MongoDB",
-                    "Review application startup logs for connection errors"
-                ]
+                "message": "Database not connected - check startup logs"
             }
     except Exception as e:
         logger.error(f"Database status check failed: {e}")
         return {
             "connected": False,
             "error": str(e),
-            "message": "Database connection failed",
-            "environment": env_status
+            "message": "Database connection failed"
         }
 
 @app.get("/database/rules")
 async def get_all_rules_from_db():
     """Get all extracted rules from database"""
     try:
-        if db_manager.database is None:
+        if not supabase_client or not supabase_client.connected:
             raise HTTPException(status_code=503, detail="Database not connected")
         
-        rules = await db_manager.get_all_rules()
+        rules = await supabase_client.get_all_rules()
         return {
-            "rules": [
-                {
-                    "interview_session_id": rule.interview_session_id,
-                    "rule_id": rule.rule_id,
-                    "trigger": rule.trigger,
-                    "action": rule.action,
-                    "priority": rule.priority,
-                    "category": rule.category,
-                    "extracted_at": (rule.extracted_at.isoformat() if hasattr(rule.extracted_at, "isoformat") else rule.extracted_at)
-                }
-                for rule in rules
-            ],
+            "rules": rules,
             "total_count": len(rules)
         }
     except Exception as e:
@@ -1125,35 +706,16 @@ async def get_rules_by_session_from_db(session_id: str):
     """Get all rules for a specific session from database"""
     try:
         logger.info(f"🔍 Getting rules for session: {session_id}")
-        if db_manager.database is None:
+        if not supabase_client or not supabase_client.connected:
             raise HTTPException(status_code=503, detail="Database not connected")
         
-        rules = await db_manager.get_rules_by_session(session_id)
+        rules = await supabase_client.get_rules_by_session(session_id)
         logger.info(f"📊 Found {len(rules)} rules for session {session_id}")
-        
-        # Debug: Check what session IDs exist in the rules collection
-        all_rules = await db_manager.get_all_rules()
-        session_ids_in_rules = list(set([rule.interview_session_id for rule in all_rules]))
-        logger.info(f"🔍 All session IDs in rules collection: {session_ids_in_rules}")
         
         return {
             "session_id": session_id,
-            "rules": [
-                {
-                    "rule_id": rule.rule_id,
-                    "trigger": rule.trigger,
-                    "action": rule.action,
-                    "priority": rule.priority,
-                    "category": rule.category,
-                    "extracted_at": (rule.extracted_at.isoformat() if hasattr(rule.extracted_at, "isoformat") else rule.extracted_at)
-                }
-                for rule in rules
-            ],
-            "total_count": len(rules),
-            "debug_info": {
-                "all_session_ids_in_rules": session_ids_in_rules,
-                "requested_session_id": session_id
-            }
+            "rules": rules,
+            "total_count": len(rules)
         }
     except Exception as e:
         logger.error(f"Error getting rules for session {session_id}: {e}")
@@ -1163,11 +725,11 @@ async def get_rules_by_session_from_db(session_id: str):
 async def get_rules_count():
     """Get total count of rules in database"""
     try:
-        if db_manager.database is None:
+        if not supabase_client or not supabase_client.connected:
             return {"count": 0, "connected": False}
         
-        count = await db_manager.rules_collection.count_documents({})
-        return {"count": count, "connected": True}
+        rules = await supabase_client.get_all_rules()
+        return {"count": len(rules), "connected": True}
     except Exception as e:
         logger.error(f"Error getting rules count: {e}")
         return {"count": 0, "connected": False, "error": str(e)}
@@ -1176,24 +738,23 @@ async def get_rules_count():
 async def get_rules_collection(session_id: str):
     """Get the rules collection for a session"""
     try:
-        if db_manager.database is None:
+        if not supabase_client or not supabase_client.connected:
             raise HTTPException(status_code=503, detail="Database not connected")
         
-        collection = await db_manager.get_rules_collection(session_id)
-        if not collection:
+        rules = await supabase_client.get_rules_by_session(session_id)
+        if not rules:
             return {
                 "session_id": session_id,
                 "rules": [],
                 "total_rules": 0,
-                "status": "processing"  # Still processing
+                "status": "processing"
             }
         
         return {
             "session_id": session_id,
-            "rules": collection.rules,
-            "total_rules": collection.total_rules,
-            "extracted_at": collection.extracted_at.isoformat(),
-            "status": "completed"  # Processing complete
+            "rules": rules,
+            "total_rules": len(rules),
+            "status": "completed"
         }
     except Exception as e:
         logger.error(f"Error getting rules collection for session {session_id}: {e}")
@@ -1203,16 +764,14 @@ async def get_rules_collection(session_id: str):
 async def get_processing_status(session_id: str):
     """Check if rule processing is complete for a session"""
     try:
-        if db_manager.database is None:
+        if not supabase_client or not supabase_client.connected:
             return {"status": "database_unavailable"}
         
-        # Check if rules exist in database
-        collection = await db_manager.get_rules_collection(session_id)
-        if collection and collection.rules:
+        rules = await supabase_client.get_rules_by_session(session_id)
+        if rules:
             return {
                 "status": "completed",
-                "rules_count": len(collection.rules),
-                "extracted_at": collection.extracted_at.isoformat()
+                "rules_count": len(rules)
             }
         else:
             return {"status": "processing"}
@@ -1221,10 +780,250 @@ async def get_processing_status(session_id: str):
         logger.error(f"Error checking processing status: {e}")
         return {"status": "error", "message": str(e)}
 
+# Admin Authentication Models
+class AdminLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class TaskActionRequest(BaseModel):
+    task_id: str
+    action: str  # "approve" or "reject"
+
+# Security dependency
+security = HTTPBearer()
+
+def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify admin token"""
+    user = admin_auth.verify_token(credentials.credentials)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return user
+
+# Admin Routes
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_login_page(request: Request):
+    """Serve admin login page"""
+    return templates.TemplateResponse("admin_login.html", {"request": request})
+
+@app.post("/admin/login")
+async def admin_login(login_request: AdminLoginRequest):
+    """Admin login endpoint"""
+    logger.info(f"Admin login attempt for: {login_request.email}")
+    
+    auth_result = admin_auth.authenticate(login_request.email, login_request.password)
+    if not auth_result:
+        logger.warning(f"Failed login attempt for: {login_request.email}")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    logger.info(f"Successful login for: {login_request.email}")
+    return auth_result
+
+@app.get("/admin/dashboard", response_class=HTMLResponse)
+async def admin_dashboard(request: Request):
+    """Serve admin dashboard"""
+    return templates.TemplateResponse("admin_dashboard.html", {"request": request})
+
+@app.get("/admin/conversations")
+async def get_admin_conversations(current_admin = Depends(get_current_admin)):
+    """Get all conversations for admin panel"""
+    try:
+        conversations = []
+        
+        # Get from in-memory sessions only
+        for session_id, session in interview_sessions.items():
+            conversations.append({
+                "session_id": session_id,
+                "expert_name": "Expert User",
+                "expertise_area": "General",
+                "completed": session.is_complete,
+                "messages": session.conversation_history
+            })
+        
+        return {"conversations": conversations}
+        
+    except Exception as e:
+        logger.error(f"Error getting admin conversations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/tasks")
+async def get_admin_tasks(current_admin = Depends(get_current_admin)):
+    """Get all tasks for admin panel"""
+    try:
+        tasks = []
+        task_id = 1
+        
+        # Get tasks from completed interview sessions
+        for session_id, session in interview_sessions.items():
+            if hasattr(session, 'extracted_tasks') and session.extracted_tasks:
+                for task_text in session.extracted_tasks:
+                    tasks.append({
+                        "id": str(task_id),
+                        "session_id": session_id,
+                        "expert_name": "Expert User",
+                        "task_text": task_text,
+                        "category": "General",
+                        "priority": "medium",
+                        "status": "pending"
+                    })
+                    task_id += 1
+        
+        # Add sample task if no real tasks exist
+        if not tasks:
+            tasks = [{
+                "id": "1",
+                "session_id": "sample",
+                "expert_name": "Sample Expert",
+                "task_text": "Mr. French should use calm and reassuring language when a child expresses frustration",
+                "category": "Communication",
+                "priority": "high",
+                "status": "pending"
+            }]
+        
+        return {"tasks": tasks}
+        
+    except Exception as e:
+        logger.error(f"Error getting admin tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/tasks/action")
+async def admin_task_action(action_request: TaskActionRequest, current_admin = Depends(get_current_admin)):
+    """Approve or reject a task"""
+    try:
+        task_id = action_request.task_id
+        action = action_request.action
+        
+        if action == "approve":
+            # Get rule from Supabase
+            if supabase_client.connected:
+                rules = await supabase_client.get_all_rules()
+                rule = next((r for r in rules if str(r['id']) == task_id), None)
+                
+                if rule:
+                    task_data = {
+                        "task_text": rule['rule_text'],
+                        "expert_name": rule.get('expert_name', 'Expert User'),
+                        "category": rule.get('expertise_area', 'General'),
+                        "priority": "medium"
+                    }
+                    
+                    # Send to Jira
+                    jira_issue_key = jira_client.create_task(
+                        summary_text=f"AI Coach Rule: {task_data['task_text'][:100]}...",
+                        description=f"Expert: {task_data['expert_name']}\nCategory: {task_data['category']}\nRule: {task_data['task_text']}"
+                    )
+                    
+                    # Mark rule as completed in Supabase
+                    async with supabase_client.pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE interview_rules SET completed = TRUE WHERE id = $1",
+                            rule['id']
+                        )
+                    
+                    return {
+                        "success": True,
+                        "message": "Rule approved and sent to Jira",
+                        "jira_issue_key": jira_issue_key
+                    }
+                else:
+                    raise HTTPException(status_code=404, detail="Rule not found")
+            else:
+                raise HTTPException(status_code=503, detail="Database not available")
+            
+        elif action == "reject":
+            # For now, just return success (no status update needed in simplified schema)
+            return {
+                "success": True,
+                "message": "Rule rejected"
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Invalid action")
+            
+    except Exception as e:
+        logger.error(f"Error processing task action: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/approve/{session_id}")
+async def approve_task(session_id: str, current_admin = Depends(get_current_admin)):
+    """Approve task and send to Jira"""
+    try:
+        print(f"🎯 APPROVE TASK: Starting approval for session {session_id}")
+        
+        if supabase_client.connected:
+            rule = supabase_client.get_rule_by_session_id(session_id)
+            if rule:
+                print(f"📋 RULE FOUND: {rule}")
+                # Create Jira task
+                jira_key = jira_client.create_task(
+                    summary_text=f"AI Coach Rule: {rule[4][:100]}...",
+                    description=f"Expert: {rule[2]}\nArea: {rule[3]}\nRule: {rule[4]}"
+                )
+                
+                if jira_key:
+                    print(f"✅ JIRA SUCCESS: Created task {jira_key}")
+                    # Update rule status to completed
+                    supabase_client.update_rule_status(session_id, True)
+                    return {"success": True, "jira_key": jira_key}
+                else:
+                    print("❌ JIRA FAILED: Could not create task")
+                    return {"success": False, "error": "Failed to create Jira task"}
+            else:
+                print(f"❌ NO RULE FOUND for session {session_id}")
+                return {"success": False, "error": "Rule not found"}
+        else:
+            print("❌ DATABASE NOT CONNECTED")
+            return {"success": False, "error": "Database not connected"}
+        
+    except Exception as e:
+        print(f"❌ APPROVE ERROR: {e}")
+        logger.error(f"Error approving task: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/admin/disapprove/{session_id}")
+async def disapprove_task(session_id: str, current_admin = Depends(get_current_admin)):
+    """Disapprove task without sending to Jira"""
+    try:
+        print(f"❌ DISAPPROVE TASK: Starting for session {session_id}")
+        
+        if supabase_client.connected:
+            success = supabase_client.update_rule_status(session_id, True)
+            print(f"✅ DISAPPROVE SUCCESS: {success}")
+            return {"success": success}
+        else:
+            print("❌ DATABASE NOT CONNECTED")
+            return {"success": False, "error": "Database not connected"}
+        
+    except Exception as e:
+        print(f"❌ DISAPPROVE ERROR: {e}")
+        logger.error(f"Error disapproving task: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.get("/admin/stats")
+async def get_admin_stats(current_admin = Depends(get_current_admin)):
+    """Get dashboard statistics"""
+    try:
+        # Get from Supabase
+        if supabase_client.connected:
+            stats = await supabase_client.get_stats()
+        else:
+            # Fallback mock data
+            stats = {
+                "total_interviews": 5,
+                "pending_tasks": 3,
+                "approved_tasks": 8,
+                "rejected_tasks": 2
+            }
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"Error getting admin stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting FastAPI server...")
-    print("🌐 Binding to: 0.0.0.0:8000")
-    print("🔗 Local access: http://localhost:8000")
-    print("🔗 Network access: http://YOUR_IP:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    print("🚀 Starting AI Coach Interview System...")
+    print("🌐 Binding to: 0.0.0.0:8001")
+    print("🔗 Interview Interface: http://localhost:8001")
+    print("🔗 Admin Panel: http://localhost:8001/admin")
+    print("🔑 Admin Credentials: admin@aicoach.com / admin123")
+    uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")

@@ -14,3 +14,4 @@ chromadb==0.4.22
 sentence-transformers==2.2.2
 psycopg2
 numpy==1.26.4
+bcrypt==4.0.1

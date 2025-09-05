@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Coach Expert Interview</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 500px;
+            padding: 40px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header img {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            object-fit: cover;
+            margin-bottom: 15px;
+            border: 3px solid #1e293b;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #1e293b;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: #64748b;
+            font-size: 16px;
+            line-height: 1.5;
+        }
+
+        .admin-link {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 2px solid #1e293b;
+            color: #1e293b;
+            padding: 10px 20px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(30, 41, 59, 0.2);
+        }
+
+        .admin-link:hover {
+            background: #1e293b;
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(30, 41, 59, 0.3);
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #374151;
+            font-size: 14px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 15px 20px;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            background: white;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #1e293b;
+            box-shadow: 0 0 0 3px rgba(30, 41, 59, 0.1);
+        }
+
+        .start-btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 10px;
+        }
+
+        .start-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(30, 41, 59, 0.4);
+        }
+
+        .start-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .error-message {
+            background: #fee2e2;
+            color: #dc2626;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            margin-top: 10px;
+        }
+
+        .loading i {
+            animation: spin 1s linear infinite;
+            color: #1e293b;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <a href="/admin" class="admin-link">
+        <i class="fas fa-cog"></i> Admin Panel
+    </a>
+
+    <div class="container">
+        <div class="header">
+            <img src="MrFrench.png" alt="Mr. French" style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover; margin-bottom: 15px;">
+            <h1>Expert Interview</h1>
+            <p>Share your expertise to help train Mr. French AI for better family support</p>
+        </div>
+
+        <div class="error-message" id="errorMessage">
+            Please fill in all required fields.
+        </div>
+
+        <form id="expertForm">
+            <div class="form-group">
+                <label for="expertName">Your Name *</label>
+                <input type="text" id="expertName" class="form-input" placeholder="Dr. Sarah Johnson" required>
+            </div>
+
+            <div class="form-group">
+                <label for="expertEmail">Email Address *</label>
+                <input type="email" id="expertEmail" class="form-input" placeholder="sarah@example.com" required>
+            </div>
+
+            <div class="form-group">
+                <label for="expertiseArea">Area of Expertise</label>
+                <input type="text" id="expertiseArea" class="form-input" placeholder="Child Psychology, Family Therapy, etc.">
+            </div>
+
+            <button type="submit" class="start-btn" id="startBtn">
+                <i class="fas fa-play"></i> Start Interview
+            </button>
+
+            <div class="loading" id="loading">
+                <i class="fas fa-spinner"></i> Starting interview...
+            </div>
+        </form>
+    </div>
+
+    <script>
+        const expertForm = document.getElementById('expertForm');
+        const startBtn = document.getElementById('startBtn');
+        const loading = document.getElementById('loading');
+        const errorMessage = document.getElementById('errorMessage');
+
+        expertForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const expertName = document.getElementById('expertName').value.trim();
+            const expertEmail = document.getElementById('expertEmail').value.trim();
+            const expertiseArea = document.getElementById('expertiseArea').value.trim();
+
+            if (!expertName || !expertEmail) {
+                showError('Please fill in all required fields');
+                return;
+            }
+
+            try {
+                showLoading(true);
+                hideError();
+
+                const response = await fetch('/start_interview_with_expert', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        expert_name: expertName,
+                        expert_email: expertEmail,
+                        expertise_area: expertiseArea || 'General'
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    // Redirect to interview page with session info
+                    window.location.href = `/interview?session_id=${data.session_id}`;
+                } else {
+                    showError(data.detail || 'Failed to start interview');
+                }
+            } catch (error) {
+                showError('Connection error. Please try again.');
+            } finally {
+                showLoading(false);
+            }
+        });
+
+        function showLoading(show) {
+            loading.style.display = show ? 'block' : 'none';
+            startBtn.disabled = show;
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+        }
+
+        function hideError() {
+            errorMessage.style.display = 'none';
+        }
+    </script>
+</body>
+</html>

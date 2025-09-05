@@ -390,7 +390,7 @@
                 <div class="panel-header">
                     <h2>
                         <i class="fas fa-tasks"></i>
-                        Extracted Rules
+                        Suggested Tasks
                     </h2>
                 </div>
                 <div class="panel-content" id="tasksPanel">
@@ -407,16 +407,70 @@
         let conversations = [];
         let tasks = [];
 
-        // Check authentication on load
+        // Prevent browser back button access
         window.addEventListener('load', function() {
+            // Replace current history entry to prevent back button
+            history.replaceState(null, null, window.location.href);
+            
             const token = localStorage.getItem('admin_token');
             if (!token) {
-                window.location.href = '/admin';
+                console.log('No token found, redirecting to login');
+                window.location.replace('/admin');
                 return;
             }
             
-            loadDashboardData();
+            console.log('Token found, verifying...');
+            // Verify token is still valid
+            verifyTokenAndLoad();
         });
+        
+        // Handle browser back/forward navigation
+        window.addEventListener('popstate', function(event) {
+            const token = localStorage.getItem('admin_token');
+            if (!token) {
+                window.location.replace('/admin');
+                return;
+            }
+            // Push state again to prevent going back
+            history.pushState(null, null, window.location.href);
+        });
+        
+        // Push initial state to prevent back navigation
+        history.pushState(null, null, window.location.href);
+        
+        async function verifyTokenAndLoad() {
+            const token = localStorage.getItem('admin_token');
+            try {
+                console.log('Verifying token with stats endpoint...');
+                const response = await fetch('/admin/stats', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                console.log('Stats response status:', response.status);
+                
+                if (response.status === 401 || response.status === 403) {
+                    console.log('Token invalid, removing and redirecting');
+                    localStorage.removeItem('admin_token');
+                    alert('Session expired. Please login again.');
+                    window.location.replace('/admin');
+                    return;
+                }
+                
+                if (response.ok) {
+                    console.log('Token valid, loading dashboard');
+                    loadDashboardData();
+                } else {
+                    console.log('Unexpected response status:', response.status);
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                console.error('Auth verification failed:', error);
+                localStorage.removeItem('admin_token');
+                window.location.replace('/admin');
+            }
+        }
 
         async function loadDashboardData() {
             try {
@@ -427,6 +481,10 @@
                 ]);
             } catch (error) {
                 console.error('Error loading dashboard data:', error);
+                if (error.message.includes('401')) {
+                    localStorage.removeItem('admin_token');
+                    window.location.replace('/admin');
+                }
             }
         }
 
@@ -560,10 +618,10 @@
                     </div>
                     ${task.status === 'pending' ? `
                         <div class="task-actions">
-                            <button class="btn btn-approve" onclick="approveTask('${task.session_id}')">
+                            <button class="btn btn-approve" onclick="approveTask('${task.id}')">
                                 <i class="fas fa-check"></i> Approve
                             </button>
-                            <button class="btn btn-reject" onclick="rejectTask('${task.session_id}')">
+                            <button class="btn btn-reject" onclick="rejectTask('${task.id}')">
                                 <i class="fas fa-times"></i> Reject
                             </button>
                         </div>
@@ -579,10 +637,10 @@
             content.classList.toggle('show');
         }
 
-        async function approveTask(sessionId) {
+        async function approveTask(taskId) {
             try {
                 const token = localStorage.getItem('admin_token');
-                const response = await fetch(`/admin/approve/${sessionId}`, {
+                const response = await fetch(`/admin/approve/${taskId}`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${token}`,
@@ -592,16 +650,12 @@
                 
                 const result = await response.json();
                 if (result.success) {
-                    alert(`Task approved and sent to Jira! Issue key: ${result.jira_key}`);
-                    // Update task status locally
-                    const task = tasks.find(t => t.session_id === sessionId);
-                    if (task) {
-                        task.status = 'approved';
-                        renderTasks();
-                        loadStats();
-                    }
+                    alert(result.message || `Task approved and sent to Jira! Issue key: ${result.jira_key}`);
+                    // Reload tasks and stats
+                    await loadTasks();
+                    await loadStats();
                 } else {
-                    alert('Error approving task: ' + result.error);
+                    alert('Failed to approve task: ' + result.error);
                 }
             } catch (error) {
                 console.error('Error approving task:', error);
@@ -609,10 +663,10 @@
             }
         }
 
-        async function rejectTask(sessionId) {
+        async function rejectTask(taskId) {
             try {
                 const token = localStorage.getItem('admin_token');
-                const response = await fetch(`/admin/disapprove/${sessionId}`, {
+                const response = await fetch(`/admin/reject/${taskId}`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${token}`,
@@ -622,16 +676,12 @@
                 
                 const result = await response.json();
                 if (result.success) {
-                    alert('Task rejected successfully!');
-                    // Update task status locally
-                    const task = tasks.find(t => t.session_id === sessionId);
-                    if (task) {
-                        task.status = 'rejected';
-                        renderTasks();
-                        loadStats();
-                    }
+                    alert(result.message || 'Task rejected successfully!');
+                    // Reload tasks and stats
+                    await loadTasks();
+                    await loadStats();
                 } else {
-                    alert('Error rejecting task: ' + result.error);
+                    alert('Failed to reject task: ' + result.error);
                 }
             } catch (error) {
                 console.error('Error rejecting task:', error);
@@ -641,7 +691,9 @@
 
         function logout() {
             localStorage.removeItem('admin_token');
-            window.location.href = '/admin';
+            // Clear history and redirect
+            history.replaceState(null, null, '/admin');
+            window.location.replace('/admin');
         }
     </script>
 </body>

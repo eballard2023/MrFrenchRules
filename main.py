@@ -15,10 +15,11 @@ import asyncio
 from supabase_client import supabase_client
 try:
     from chromadb_client import chromadb_client
+    print("❌ ChromaDB disabled - using Supabase only")
 except (ImportError, AttributeError) as e:
     chromadb_client = None
-    print(f"ChromaDB not available: {e}")
-    print("Continuing without ChromaDB - conversations won't have embeddings")
+    print(f"❌ ChromaDB not available: {e}")
+    print("Using Supabase only for conversation storage")
 from admin_auth import admin_auth
 from jira_client import jira_client
 import logging
@@ -38,12 +39,19 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=15.0)
 if not os.getenv("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY environment variable is required")
 
+# Mount static files
+app.mount("/static", StaticFiles(directory="."), name="static")
+
+# Serve MrFrench.png directly
+@app.get("/MrFrench.png")
+async def get_mr_french_image():
+    from fastapi.responses import FileResponse
+    return FileResponse("MrFrench.png")
 
 templates = Jinja2Templates(directory="templates")
 
 
-interview_sessions = {}
-session_counter = 0  # Simple counter for session IDs - will be initialized from DB
+session_counter = 0  # Will be initialized from DB to avoid conflicts
 
 # Helper: filter to keep only child/family behavior rules, drop meta/interview/project rules
 def is_behavior_rule(rule: Dict) -> bool:
@@ -211,15 +219,21 @@ async def startup_event():
         logger.warning(f"⚠️ Supabase connection error: {e}")
         logger.info("App will continue without Supabase - using fallback storage")
     
-    # ChromaDB is optional and handled in client init
-    if chromadb_client and chromadb_client.client:
-        logger.info("✅ ChromaDB available")
-    else:
-        logger.info("ℹ️ ChromaDB disabled - continuing without embeddings")
+    # ChromaDB disabled due to version issues
+    logger.info("ℹ️ ChromaDB disabled - using Supabase only")
     
-    # Initialize session counter
-    session_counter = 0
-    logger.info("Session counter initialized to 0")
+    # Initialize session counter from database to avoid conflicts
+    if supabase_client.connected:
+        try:
+            max_session = await supabase_client.get_max_session_id()
+            session_counter = max_session + 1
+            logger.info(f"Session counter initialized to {session_counter}")
+        except Exception as e:
+            session_counter = 1
+            logger.warning(f"Could not get max session ID, starting from 1: {e}")
+    else:
+        session_counter = 1
+        logger.info("Session counter initialized to 1 (no database)")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -240,6 +254,10 @@ class InterviewSession:
         self.current_question_index = 0
         self.is_complete = False
         self.created_at = datetime.now()
+        self.expert_name = "Unknown Expert"
+        self.expert_email = "unknown@example.com"
+        self.expertise_area = "General"
+        self.asked_questions = set()  # Track asked questions to prevent repetition
 
 # System prompt for the AI interviewer
 SYSTEM_PROMPT = """You are an AI interviewer designed to extract behavioral rules and best practices from subject matter experts (SMEs). These rules will be fed into Mr. French AI to make it behave like an expert.
@@ -359,15 +377,23 @@ Mr. French ties together three distinct but connected conversation types. Collec
 - For unrelated trivia, decline and return to the interview
 - **CRITICAL**: On greeting ("hello", "hi"), reply with greeting and continue the interview dont give intro of mr french again and again tell him if he asks otherwise continue the interview
 - **NEVER** respond with "I'm here to help" or similar general assistant language
-- **RESPONSE STYLE**: Keep responses brief and neutral. Avoid praise or evaluative language (e.g., "great", "excellent", "love that", "that's exactly right"). After receiving an answer, give a short neutral acknowledgment (e.g., "Noted." or "Understood.") and then ask the next question directly. Don't elaborate on their previous response.
-- **CRITICAL**: NEVER explain, analyze, judge, compliment, congratulate, or praise their previous answer. Just acknowledge briefly and ask the next question. Keep responses under 2 sentences.is 
-- Dont repeat questions if once answered in the same session."""
+- **RESPONSE STYLE**: Keep responses brief and neutral. Avoid praise or evaluative language (e.g., "great", "excellent", "love that", "that's exactly right"). After receiving an answer, give a short neutral acknowledgment (e.g., "Noted." or "Understood."). If the user asks a question at the end of their response (indicated by a question mark), acknowledge it briefly (e.g., "That dashboard concept could be valuable for families.") then proceed with the next interview question. Don't elaborate on their previous response unless they specifically ask for clarification.
+- **CRITICAL**: NEVER explain, analyze, judge, compliment, congratulate, or praise their previous answer. Just acknowledge briefly and ask the next question. If they ask a question, give a brief 1-sentence response then ask your next question. Keep total responses under 3 sentences.
+- **SCRIPT ADHERENCE**: While being responsive to their answers, ensure you cover the key areas from the interview script above. You can ask follow-up questions based on their responses, but make sure to eventually cover all the main topics: expertise/principles, outcomes/measurement, processes/methods, guardrails/boundaries, tone/style, handling variability, and knowledge depth.
+- **CRITICAL**: NEVER repeat questions that have already been asked in this session. Keep track of what has been covered and move to new topics. If a similar area needs exploration, ask from a different angle or focus on a different aspect.
+- **QUESTION TRACKING**: Before asking any question, consider what has already been discussed. Avoid asking about the same topic twice, even if phrased differently."""
 
 @app.get("/", response_class=HTMLResponse)
+async def get_start_page(request: Request):
+    """Serve the expert info collection page"""
+    logger.info("🏠 Start page requested")
+    return templates.TemplateResponse("start.html", {"request": request})
+
+@app.get("/interview", response_class=HTMLResponse)
 async def get_interview_page(request: Request):
-    """Serve the main interview page"""
-    logger.info("🏠 Main page requested")
-    return templates.TemplateResponse("index.html", {"request": request})
+    """Serve the interview page"""
+    logger.info("💬 Interview page requested")
+    return templates.TemplateResponse("interview.html", {"request": request})
 
 @app.get("/health")
 async def health_check():
@@ -377,36 +403,59 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "database_connected": supabase_client.connected if supabase_client else False,
-        "sessions_in_memory": len(interview_sessions)
+        "sessions_in_memory": 0
     }
 
-@app.post("/start_interview")
-async def start_interview():
-    """Start a new interview session"""
-    logger.info("🚀 START_INTERVIEW endpoint called!")
+class ExpertInfo(BaseModel):
+    expert_name: str
+    expert_email: str
+    expertise_area: str = "General"
+
+@app.post("/start_interview_with_expert")
+async def start_interview_with_expert(expert_info: ExpertInfo):
+    """Start a new interview session with expert information"""
+    logger.info(f"🚀 START_INTERVIEW_WITH_EXPERT: {expert_info.expert_name} ({expert_info.expert_email})")
     global session_counter
-    session_counter += 1
-    session_id = str(session_counter)  # Simple: 1, 2, 3, etc.
-    logger.info(f"📝 Creating new session: {session_id}")
-    session = InterviewSession(session_id)
-    interview_sessions[session_id] = session
+    session_id = str(session_counter)
+    session_counter += 1  # Increment after using
+    print(f"🔢 SESSION: Created session {session_id}, next will be {session_counter}")
+    logger.info(f"Session counter: current={session_id}, next={session_counter}")
     
-    # Interview stored in memory and ChromaDB
+    # Save to database only
+    if not supabase_client.connected:
+        raise HTTPException(status_code=503, detail="Database not available")
     
-    # Start with Mr. French introduction and first question
+    await supabase_client.save_session(session_id, expert_info.expert_name, expert_info.expert_email, expert_info.expertise_area)
+    
+    # ChromaDB disabled - using Supabase only
+    print(f"💾 Using Supabase only for session {session_id}")
+    
+    # Start with personalized greeting
     ai_message = (
-        "Hi! I'm here to interview you for training Mr. French, our conversational AI family assistant. "
-        "Mr. French helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
-        "This interview is to extract expert rules to train Mr. French for supporting families. "
-        "Could you please tell your name and how you could help train Mr. French to better support families?"
+        f"Hello {expert_info.expert_name}! Thank you for sharing your expertise in {expert_info.expertise_area}. "
+        "I'm here to interview you for training Mr. French, our conversational AI family assistant. "
+        "Mr. French helps families manage children's routines, tasks, and behavior. "
+        "To start, could you describe your area of expertise and how it could help Mr. French better support families?"
     )
-    session.conversation_history.append({"role": "assistant", "content": ai_message})
+    # Add AI message to database
+    conversation_history = [{"role": "assistant", "content": ai_message}]
+    try:
+        await supabase_client.update_session(session_id, conversation_history, 0, False)
+        logger.info(f"✅ Initial AI message saved for session {session_id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to save initial message for session {session_id}: {e}")
+        # Continue anyway - the frontend can handle empty conversations
     
     return {
         "session_id": session_id,
         "message": ai_message,
         "question_number": 0
     }
+
+@app.post("/start_interview")
+async def start_interview():
+    """Legacy endpoint - redirect to expert info collection"""
+    raise HTTPException(status_code=400, detail="Please provide expert information first")
 
 @app.post("/chat")
 async def chat_with_interviewer(chat_message: ChatMessage):
@@ -415,32 +464,32 @@ async def chat_with_interviewer(chat_message: ChatMessage):
     logger.info(f"💬 User message: {chat_message.message[:100]}...")
     session_id = chat_message.session_id
     
-    if not session_id:
-        raise HTTPException(status_code=404, detail="Interview session not found")
+    if not session_id or not supabase_client.connected:
+        raise HTTPException(status_code=404, detail="Session not found")
 
-    # Session stored in memory only
-
-    if session_id not in interview_sessions:
-        raise HTTPException(status_code=404, detail="Interview session not found")
+    # Get session from database
+    session_data = await supabase_client.get_session(session_id)
+    if not session_data:
+        raise HTTPException(status_code=404, detail="Session not found")
     
-    session = interview_sessions[session_id]
-    
-    if session.is_complete:
+    if session_data['is_complete']:
         return {
-            "message": "Interview has been completed. Please generate the rules using the /generate_rules endpoint.",
+            "message": "Interview has been completed.",
             "is_complete": True
         }
     
     # Add user's response to conversation history
-    session.conversation_history.append({"role": "user", "content": chat_message.message})
+    conversation_history = session_data['conversation_history']
+    conversation_history.append({"role": "user", "content": chat_message.message})
     
-    # ChromaDB storage removed
+    # ChromaDB disabled - using Supabase only
+    print(f"💾 User message stored in Supabase for session {session_id}")
     
-    logger.info(f"💬 Session {session_id} - User message added. Total messages: {len(session.conversation_history)}")
+    logger.info(f"💬 Session {session_id} - User message added. Total messages: {len(conversation_history)}")
 
     # Guard: handle small-talk or project Qs without advancing the question index
     msg_type = is_smalltalk_or_project(chat_message.message)
-    if session.current_question_index == 0 and (msg_type in ["greeting", "smalltalk", "who_are_you", "who_is_mrfrench", "who_is_timmy", "about_interview"]):
+    if session_data['current_question_index'] == 0 and (msg_type in ["greeting", "smalltalk", "who_are_you", "who_is_mrfrench", "who_is_timmy", "about_interview"]):
         if msg_type == "greeting":
             # Start with Mr. French introduction and ask about current implementation knowledge
             ai_message = (
@@ -479,7 +528,8 @@ async def chat_with_interviewer(chat_message: ChatMessage):
                 "In this interview, we'll discuss your expertise, guiding principles, outcomes you aim for, how you measure progress, methods you use, challenges you face, and more related to your area of expertise. "
                 "We capture your expertise so Mr. French behaves like an expert in real family conversations. Would you like to know about our current implementation details first?"
             )
-        session.conversation_history.append({"role": "assistant", "content": ai_message})
+        conversation_history.append({"role": "assistant", "content": ai_message})
+        await supabase_client.update_session(session_id, conversation_history, 1, False)
         return {
             "message": sanitize_question(ai_message),
             "question_number": 1,
@@ -489,8 +539,22 @@ async def chat_with_interviewer(chat_message: ChatMessage):
         }
     
     try:
+        # Create context about previously asked questions to prevent repetition
+        previous_questions = []
+        for msg in conversation_history:
+            if msg['role'] == 'assistant' and '?' in msg['content']:
+                # Extract the question part
+                question_part = msg['content'].split('?')[0] + '?'
+                previous_questions.append(question_part)
+        
+        # Add context to system prompt about what's been asked
+        enhanced_system_prompt = SYSTEM_PROMPT
+        if previous_questions:
+            questions_context = "\n\nPREVIOUSLY ASKED QUESTIONS (DO NOT REPEAT):\n" + "\n".join([f"- {q}" for q in previous_questions[-5:]])  # Last 5 questions
+            enhanced_system_prompt += questions_context
+        
         # Get AI's next question/response
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + session.conversation_history
+        messages = [{"role": "system", "content": enhanced_system_prompt}] + conversation_history
         
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",  # Faster for question generation
@@ -502,24 +566,39 @@ async def chat_with_interviewer(chat_message: ChatMessage):
         
         ai_message = sanitize_question(response.choices[0].message.content)
         ai_message = clean_response(ai_message)
-        session.conversation_history.append({"role": "assistant", "content": ai_message})
-        session.current_question_index += 1
+        conversation_history.append({"role": "assistant", "content": ai_message})
+        current_question_index = session_data['current_question_index'] + 1
         
-        # ChromaDB storage removed
+        # ChromaDB disabled - using Supabase only
+        print(f"💾 AI message stored in Supabase for session {session_id}")
+        
+        # Save to database
+        await supabase_client.update_session(session_id, conversation_history, current_question_index, session_data['is_complete'])
         
         # Check if interview should be completed (basic heuristic)
         auto_submitted = False
         final_note = None
-        if session.current_question_index >= 23 or "conclude" in ai_message.lower() or "summary" in ai_message.lower():
-            session.is_complete = True
+        if current_question_index >= 23 or "conclude" in ai_message.lower() or "summary" in ai_message.lower():
+            is_complete = True
             # Add a closing message
-            final_note = "Thank you. The interview is complete. You can now click Submit to save your responses."
-            session.conversation_history.append({"role": "assistant", "content": final_note})
+            final_note = "Thank you for sharing your valuable expertise! The interview is now complete. Your insights will help improve Mr. French's ability to support families."
+            conversation_history.append({"role": "assistant", "content": final_note})
+            await supabase_client.update_session(session_id, conversation_history, current_question_index, True)
+            
+            # Auto-submit the interview for rule extraction
+            try:
+                print(f"🎯 AUTO-SUBMIT: Starting rule extraction for completed session {session_id}")
+                await submit_interview(session_id)
+                auto_submitted = True
+                print(f"✅ AUTO-SUBMIT: Rule extraction completed for session {session_id}")
+            except Exception as e:
+                logger.error(f"Auto-submit failed: {e}")
+                print(f"❌ AUTO-SUBMIT ERROR: {e}")
         
         return {
             "message": ai_message,
-            "question_number": session.current_question_index + 1,
-            "is_complete": session.is_complete,
+            "question_number": current_question_index + 1,
+            "is_complete": current_question_index >= 23 or "conclude" in ai_message.lower() or "summary" in ai_message.lower(),
             "auto_submitted": auto_submitted,
             "final_note": final_note
         }
@@ -534,33 +613,64 @@ async def submit_interview(session_id: str):
     """Finalize interview: store in ChromaDB, extract tasks, save to Supabase"""
     logger.info(f"🔍 Submit interview called for session_id: {session_id}")
     
-    if session_id not in interview_sessions:
+    # Get session from database
+    session_data = await supabase_client.get_session(session_id)
+    if not session_data:
         raise HTTPException(status_code=404, detail="Interview session not found")
     
-    session = interview_sessions[session_id]
-    session.is_complete = True
+    # Mark session as complete
+    await supabase_client.update_session(session_id, session_data['conversation_history'], session_data['current_question_index'], True)
     
     # Extract tasks from conversation
     try:
+        # Create conversation text from session data
         conversation_text = "\n".join([
             f"{msg['role'].upper()}: {msg['content']}" 
-            for msg in session.conversation_history
+            for msg in session_data['conversation_history']
         ])
         
-        # Extract simple task statements
-        extraction_prompt = f"""Extract simple, actionable task statements from this interview conversation with a behavioral expert.
+        print(f"🔍 SUBMIT DEBUG: Session {session_id} has {len(session_data['conversation_history'])} messages")
+        print(f"🔍 SUBMIT DEBUG: Conversation length: {len(conversation_text)} characters")
+        
+        if len(conversation_text) < 100:
+            print(f"⚠️ SUBMIT WARNING: Very short conversation, may not extract meaningful rules")
+            return {
+                "message": "Interview too short for rule extraction.",
+                "status": "completed",
+                "tasks_extracted": 0,
+                "tasks": []
+            }
+        
+        # Extract behavioral rules for Mr. French
+        extraction_prompt = f"""You are analyzing an interview with a behavioral expert to extract specific rules for Mr. French AI.
 
-Each task should be a clear statement like:
-- "Mr. French should use calm language when child is frustrated"
-- "Mr. French should break tasks into smaller steps when child feels overwhelmed"
-- "Mr. French should suggest breaks when child shows signs of stress"
+**ABOUT MR. FRENCH:**
+Mr. French is a conversational AI family assistant that helps manage children's routines, tasks, and behavior. It has three chat modes:
+1. Parent ↔ Mr. French (task management, progress reports)
+2. Child ↔ Mr. French (reminders, encouragement, task completion)  
+3. Parent ↔ Child (capturing family instructions)
 
-Return ONLY the task statements, one per line. No explanations or formatting.
+Mr. French uses a zone system: Red (frustrated/stressed), Green (normal), Blue (tired/low energy).
 
-CONVERSATION:
+**EXTRACTION RULES:**
+- ONLY extract rules if the expert provided specific behavioral advice or recommendations
+- If the expert gave no meaningful advice or just answered basic questions, return "NONE"
+- Ignore general interview questions and AI interviewer responses
+- Extract actionable rules Mr. French can implement
+- Each rule should start with "Mr. French should..."
+- Focus on child behavior management, communication strategies, and family dynamics
+- Ignore meta-conversation about the interview itself
+- DO NOT generate rules from your own knowledge - only from what the expert explicitly stated
+
+**EXAMPLES:**
+- "Mr. French should use calm, reassuring language when a child is in the red zone"
+- "Mr. French should break complex tasks into 2-3 smaller steps for better completion"
+- "Mr. French should offer specific praise for effort rather than general compliments"
+
+**CONVERSATION:**
 {conversation_text}
 
-TASK STATEMENTS:"""
+**EXTRACTED RULES:"""
         
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
@@ -574,30 +684,36 @@ TASK STATEMENTS:"""
         
         # Parse task statements
         tasks_text = response.choices[0].message.content.strip()
-        task_statements = [task.strip() for task in tasks_text.split('\n') if task.strip()]
+        if tasks_text.upper() == 'NONE' or not tasks_text:
+            task_statements = []
+        else:
+            task_statements = [task.strip() for task in tasks_text.split('\n') if task.strip() and not task.strip().upper().startswith('NONE')]
         
         print(f"🤖 TASK EXTRACTION: Starting for session {session_id}")
         print(f"📝 CONVERSATION LENGTH: {len(conversation_text)} characters")
         print("🧠 GPT EXTRACTION: Calling GPT-4o-mini for task extraction")
+        print(f"💬 CONVERSATION PREVIEW: {conversation_text[:200]}...")
         
-        # Store tasks in memory for admin panel
-        if not hasattr(session, 'extracted_tasks'):
-            session.extracted_tasks = []
-        session.extracted_tasks.extend(task_statements)
+        # Tasks will be stored in database only
         
         print(f"✅ GPT EXTRACTION SUCCESS: {len(task_statements)} tasks extracted")
+        if len(task_statements) > 0:
+            print(f"📝 SAMPLE TASK: {task_statements[0][:100]}...")
+        else:
+            print("⚠️ NO TASKS EXTRACTED - Check conversation content")
         
         # Save each task to Supabase
         if supabase_client.connected:
             print(f"💾 SUPABASE SAVE: Saving {len(task_statements)} tasks to database")
             for i, task in enumerate(task_statements, 1):
                 print(f"💾 SAVING TASK {i}/{len(task_statements)}: {task[:50]}...")
-                await supabase_client.save_interview_rule(
+                rule_id = await supabase_client.save_interview_rule(
                     session_id=session_id,
-                    expert_name="Expert User",
-                    expertise_area="General",
+                    expert_name=session_data['expert_name'],
+                    expertise_area=session_data['expertise_area'],
                     rule_text=task
                 )
+                print(f"💾 RULE SAVED: ID {rule_id} for session {session_id}")
         else:
             print("⚠️ SUPABASE UNAVAILABLE: Tasks saved to memory only")
         
@@ -617,6 +733,8 @@ TASK STATEMENTS:"""
             "message": "Interview saved, but there was an error processing tasks.",
             "status": "error"
         }
+
+# Removed auto_submit_interview - now using submit_interview directly
 
 # Removed background processing - now using direct task extraction in submit_interview
 
@@ -647,17 +765,33 @@ async def get_conversation(session_id: str):
     """Get the full conversation history for a session"""
     logger.info(f"🔍 Getting conversation for session: {session_id}")
     
-    if session_id in interview_sessions:
-        session = interview_sessions[session_id]
-        logger.info(f"📝 Session {session_id} found in memory - {len(session.conversation_history)} messages")
-        return {
-            "session_id": session_id,
-            "conversation": session.conversation_history,
-            "is_complete": session.is_complete,
-            "source": "memory"
-        }
+    # Check database first
+    if supabase_client.connected:
+        try:
+            db_session = await supabase_client.get_session(session_id)
+            if db_session:
+                logger.info(f"✅ Found session {session_id} with {len(db_session.get('conversation_history', []))} messages")
+                return {
+                    "session_id": session_id,
+                    "conversation": db_session.get('conversation_history', []),
+                    "is_complete": db_session.get('is_complete', False),
+                    "source": "database"
+                }
+            else:
+                logger.warning(f"⚠️ Session {session_id} not found in database")
+        except Exception as e:
+            logger.error(f"❌ Database error getting session {session_id}: {e}")
+    else:
+        logger.warning("⚠️ Database not connected")
     
-    raise HTTPException(status_code=404, detail="Session not found")
+    # Return empty conversation for new sessions instead of 404
+    logger.info(f"📝 Returning empty conversation for session {session_id}")
+    return {
+        "session_id": session_id,
+        "conversation": [],
+        "is_complete": False,
+        "source": "empty"
+    }
 
 # New database management endpoints
 @app.get("/database/status")
@@ -794,9 +928,12 @@ security = HTTPBearer()
 
 def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify admin token"""
+    print(f"🔐 AUTH CHECK: Received token: {credentials.credentials[:20]}...")
     user = admin_auth.verify_token(credentials.credentials)
     if not user:
+        print("❌ AUTH FAILED: Invalid or expired token")
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    print(f"✅ AUTH SUCCESS: User {user['email']}")
     return user
 
 # Admin Routes
@@ -820,24 +957,47 @@ async def admin_login(login_request: AdminLoginRequest):
 
 @app.get("/admin/dashboard", response_class=HTMLResponse)
 async def admin_dashboard(request: Request):
-    """Serve admin dashboard"""
-    return templates.TemplateResponse("admin_dashboard.html", {"request": request})
+    """Serve admin dashboard - authentication handled in JavaScript"""
+    response = templates.TemplateResponse("admin_dashboard.html", {"request": request})
+    # Prevent caching to avoid back button access
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 @app.get("/admin/conversations")
 async def get_admin_conversations(current_admin = Depends(get_current_admin)):
-    """Get all conversations for admin panel"""
+    """Get all conversations for admin panel from Supabase"""
     try:
         conversations = []
         
-        # Get from in-memory sessions only
-        for session_id, session in interview_sessions.items():
-            conversations.append({
-                "session_id": session_id,
-                "expert_name": "Expert User",
-                "expertise_area": "General",
-                "completed": session.is_complete,
-                "messages": session.conversation_history
-            })
+        # Get from Supabase database
+        if supabase_client.connected:
+            try:
+                print("🔍 ADMIN: Getting conversations from Supabase")
+                # Get all sessions from database
+                all_sessions = await supabase_client.get_all_sessions()
+                print(f"🔍 DEBUG: Found {len(all_sessions)} total sessions in database")
+                for session in all_sessions:
+                    # Only include sessions with actual conversation history
+                    conversation_history = session.get('conversation_history', [])
+                    if conversation_history and len(conversation_history) > 0:
+                        conversations.append({
+                            "session_id": session['session_id'],
+                            "expert_name": session.get('expert_name', 'Unknown Expert'),
+                            "expertise_area": session.get('expertise_area', 'General'),
+                            "completed": session.get('is_complete', False),
+                            "messages": conversation_history
+                        })
+                print(f"✅ ADMIN: Retrieved {len(conversations)} conversations with history from Supabase")
+            except Exception as e:
+                print(f"❌ Supabase: Error getting conversations: {e}")
+                # Add debug info
+                print(f"Debug: Total sessions found: {len(all_sessions) if 'all_sessions' in locals() else 0}")
+        else:
+            print(f"⚠️ Supabase: Database not available for getting conversations")
+            # Return empty conversations if database not available
+            conversations = []
         
         return {"conversations": conversations}
         
@@ -850,34 +1010,31 @@ async def get_admin_tasks(current_admin = Depends(get_current_admin)):
     """Get all tasks for admin panel"""
     try:
         tasks = []
-        task_id = 1
         
-        # Get tasks from completed interview sessions
-        for session_id, session in interview_sessions.items():
-            if hasattr(session, 'extracted_tasks') and session.extracted_tasks:
-                for task_text in session.extracted_tasks:
-                    tasks.append({
-                        "id": str(task_id),
-                        "session_id": session_id,
-                        "expert_name": "Expert User",
-                        "task_text": task_text,
-                        "category": "General",
-                        "priority": "medium",
-                        "status": "pending"
-                    })
-                    task_id += 1
+        # Get tasks from database if connected
+        if supabase_client.connected:
+            db_rules = await supabase_client.get_all_rules()
+            for rule in db_rules:
+                # Fix status logic: completed=False means pending, completed=True means approved
+                completed = rule.get('completed', False)
+                status = "approved" if completed else "pending"
+                
+                # Ensure rule_text is a string
+                rule_text = str(rule.get('rule_text', 'No rule text'))
+                
+                tasks.append({
+                    "id": str(rule['id']),
+                    "session_id": str(rule['session_id']),
+                    "expert_name": str(rule.get('expert_name', 'Expert User')),
+                    "task_text": rule_text,
+                    "category": str(rule.get('expertise_area', 'General')),
+                    "priority": "medium",
+                    "status": status
+                })
+
         
-        # Add sample task if no real tasks exist
-        if not tasks:
-            tasks = [{
-                "id": "1",
-                "session_id": "sample",
-                "expert_name": "Sample Expert",
-                "task_text": "Mr. French should use calm and reassuring language when a child expresses frustration",
-                "category": "Communication",
-                "priority": "high",
-                "status": "pending"
-            }]
+        # Sort tasks: pending first, then approved
+        tasks.sort(key=lambda x: (x['status'] != 'pending', x['id']))
         
         return {"tasks": tasks}
         
@@ -942,32 +1099,35 @@ async def admin_task_action(action_request: TaskActionRequest, current_admin = D
         logger.error(f"Error processing task action: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/admin/approve/{session_id}")
-async def approve_task(session_id: str, current_admin = Depends(get_current_admin)):
+@app.post("/admin/approve/{task_id}")
+async def approve_task(task_id: str, current_admin = Depends(get_current_admin)):
     """Approve task and send to Jira"""
     try:
-        print(f"🎯 APPROVE TASK: Starting approval for session {session_id}")
+        print(f"🎯 APPROVE TASK: Starting approval for task {task_id}")
         
         if supabase_client.connected:
-            rule = supabase_client.get_rule_by_session_id(session_id)
+            # Get rule by ID
+            db_rules = await supabase_client.get_all_rules()
+            rule = next((r for r in db_rules if str(r['id']) == task_id), None)
+            
             if rule:
-                print(f"📋 RULE FOUND: {rule}")
+                print(f"📋 RULE FOUND: {rule['rule_text'][:50]}...")
                 # Create Jira task
                 jira_key = jira_client.create_task(
-                    summary_text=f"AI Coach Rule: {rule[4][:100]}...",
-                    description=f"Expert: {rule[2]}\nArea: {rule[3]}\nRule: {rule[4]}"
+                    summary_text=f"AI Coach Rule: {rule['rule_text'][:100]}...",
+                    description=f"Expert: {rule.get('expert_name', 'Expert User')}\nArea: {rule.get('expertise_area', 'General')}\nRule: {rule['rule_text']}"
                 )
                 
                 if jira_key:
                     print(f"✅ JIRA SUCCESS: Created task {jira_key}")
                     # Update rule status to completed
-                    supabase_client.update_rule_status(session_id, True)
-                    return {"success": True, "jira_key": jira_key}
+                    await supabase_client.update_rule_completed(rule['id'], True)
+                    return {"success": True, "jira_key": jira_key, "message": f"Task approved and added to Jira: {jira_key}"}
                 else:
                     print("❌ JIRA FAILED: Could not create task")
                     return {"success": False, "error": "Failed to create Jira task"}
             else:
-                print(f"❌ NO RULE FOUND for session {session_id}")
+                print(f"❌ NO RULE FOUND for task {task_id}")
                 return {"success": False, "error": "Rule not found"}
         else:
             print("❌ DATABASE NOT CONNECTED")
@@ -978,42 +1138,61 @@ async def approve_task(session_id: str, current_admin = Depends(get_current_admi
         logger.error(f"Error approving task: {e}")
         return {"success": False, "error": str(e)}
 
-@app.post("/admin/disapprove/{session_id}")
-async def disapprove_task(session_id: str, current_admin = Depends(get_current_admin)):
-    """Disapprove task without sending to Jira"""
+@app.post("/admin/reject/{task_id}")
+async def reject_task(task_id: str, current_admin = Depends(get_current_admin)):
+    """Reject task without sending to Jira"""
     try:
-        print(f"❌ DISAPPROVE TASK: Starting for session {session_id}")
+        print(f"❌ REJECT TASK: Starting for task {task_id}")
         
         if supabase_client.connected:
-            success = supabase_client.update_rule_status(session_id, True)
-            print(f"✅ DISAPPROVE SUCCESS: {success}")
-            return {"success": success}
+            # Get rule by ID
+            db_rules = await supabase_client.get_all_rules()
+            rule = next((r for r in db_rules if str(r['id']) == task_id), None)
+            
+            if rule:
+                # Mark as completed (rejected)
+                await supabase_client.update_rule_completed(rule['id'], True)
+                print(f"✅ REJECT SUCCESS: Task {task_id} rejected")
+                return {"success": True, "message": "Task rejected"}
+            else:
+                return {"success": False, "error": "Rule not found"}
         else:
             print("❌ DATABASE NOT CONNECTED")
             return {"success": False, "error": "Database not connected"}
         
     except Exception as e:
-        print(f"❌ DISAPPROVE ERROR: {e}")
-        logger.error(f"Error disapproving task: {e}")
+        print(f"❌ REJECT ERROR: {e}")
+        logger.error(f"Error rejecting task: {e}")
         return {"success": False, "error": str(e)}
 
 @app.get("/admin/stats")
 async def get_admin_stats(current_admin = Depends(get_current_admin)):
     """Get dashboard statistics"""
     try:
-        # Get from Supabase
-        if supabase_client.connected:
-            stats = await supabase_client.get_stats()
-        else:
-            # Fallback mock data
-            stats = {
-                "total_interviews": 5,
-                "pending_tasks": 3,
-                "approved_tasks": 8,
-                "rejected_tasks": 2
-            }
+        total_interviews = 0
+        total_rules = 0
+        pending_tasks = 0
+        approved_tasks = 0
         
-        return stats
+        # Get stats from Supabase
+        if supabase_client.connected:
+            try:
+                db_rules = await supabase_client.get_all_rules()
+                total_rules = len(db_rules)
+                approved_tasks = len([r for r in db_rules if r.get('completed', False)])
+                pending_tasks = total_rules - approved_tasks
+                # Count unique sessions for total interviews
+                unique_sessions = set(r['session_id'] for r in db_rules)
+                total_interviews = len(unique_sessions)
+            except Exception as e:
+                logger.warning(f"Database stats error: {e}")
+        
+        return {
+            "total_interviews": total_interviews,
+            "pending_tasks": pending_tasks,
+            "approved_tasks": approved_tasks,
+            "rejected_tasks": total_rules
+        }
         
     except Exception as e:
         logger.error(f"Error getting admin stats: {e}")

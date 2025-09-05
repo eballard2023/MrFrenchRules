@@ -942,6 +942,33 @@ async def admin_login_page(request: Request):
     """Serve admin login page"""
     return templates.TemplateResponse("admin_login.html", {"request": request})
 
+@app.post("/admin/create-user")
+async def create_admin_user():
+    """Manually create admin user - for deployment troubleshooting"""
+    try:
+        if not supabase_client.connected:
+            supabase_client.connect()
+        
+        if not supabase_client.connection:
+            return {"success": False, "error": "Database not connected"}
+        
+        import bcrypt
+        password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        with supabase_client.connection.cursor() as cur:
+            cur.execute("""
+                INSERT INTO admin_users (email, password_hash, name)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (email) DO UPDATE SET
+                password_hash = EXCLUDED.password_hash,
+                name = EXCLUDED.name
+            """, ("admin@coachai.com", password_hash, "Admin User"))
+            supabase_client.connection.commit()
+        
+        return {"success": True, "message": "Admin user created: admin@coachai.com / admin123"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.post("/admin/login")
 async def admin_login(login_request: AdminLoginRequest):
     """Admin login endpoint"""
@@ -1179,5 +1206,6 @@ if __name__ == "__main__":
     print("🌐 Binding to: 0.0.0.0:8001")
     print("🔗 Interview Interface: http://localhost:8001")
     print("🔗 Admin Panel: http://localhost:8001/admin")
-    print("🔑 Admin Credentials: admin@aicoach.com / admin123")
+    print("🔑 Admin Credentials: admin@coachai.com / admin123")
+    print("🔧 Manual admin creation: POST /admin/create-user")
     uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")

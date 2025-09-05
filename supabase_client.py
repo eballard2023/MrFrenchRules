@@ -99,9 +99,11 @@ class SupabaseClient:
                     );
                 """)
                 
-                # Always recreate admin user
+                # Always recreate admin user from env
                 import bcrypt
-                password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                admin_email = os.getenv("ADMIN_EMAIL", "admin@coachai.com")
+                admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
+                password_hash = bcrypt.hashpw(admin_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                 
                 cur.execute("""
                     INSERT INTO admin_users (email, password_hash, name)
@@ -109,9 +111,9 @@ class SupabaseClient:
                     ON CONFLICT (email) DO UPDATE SET
                     password_hash = EXCLUDED.password_hash,
                     name = EXCLUDED.name
-                """, ("admin@coachai.com", password_hash, "Admin User"))
+                """, (admin_email, password_hash, "Admin User"))
                 
-                print("✅ Admin user created/updated: admin@coachai.com / admin123")
+                print(f"✅ Admin user created/updated: {admin_email} / {admin_password}")
                 
                 self.connection.commit()
                 

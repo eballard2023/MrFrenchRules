@@ -1004,7 +1004,7 @@ async def get_admin_tasks(current_admin = Depends(get_current_admin)):
         
         for rule in db_rules:
             completed = rule.get('completed', False)
-            status = "approved" if completed else "pending"
+            status = "completed" if completed else "pending"
             
             raw_rule_text = rule.get('rule_text')
             rule_text = str(raw_rule_text) if raw_rule_text else "No rule text available"
@@ -1019,7 +1019,7 @@ async def get_admin_tasks(current_admin = Depends(get_current_admin)):
                 "status": status
             })
         
-        tasks.sort(key=lambda x: (x['status'] != 'pending', x['id']))
+        tasks.sort(key=lambda x: (x['status'] == 'completed', x['id']))
         return {"tasks": tasks}
         
     except Exception as e:

@@ -637,18 +637,22 @@
             }
         }
 
+        let isSubmitting = false;
+        
         async function submitInterview() {
             console.log('submitInterview called, sessionId:', currentSessionId);
             
-            if (!currentSessionId) {
-                console.log('No session ID, returning');
+            if (!currentSessionId || isSubmitting) {
+                console.log('No session ID or already submitting, returning');
                 return;
             }
             
             try {
+                isSubmitting = true;
                 console.log('Starting interview submission...');
                 showLoading(true);
                 submitBtn.disabled = true;
+                submitBtn.textContent = 'Processing...';
                 
                 const response = await fetch(`/submit_interview/${currentSessionId}`, {
                     method: 'POST'
@@ -662,11 +666,15 @@
                 } else {
                     addMessage('ai', `Submission error: ${data.detail}`);
                     submitBtn.disabled = false;
+                    submitBtn.textContent = 'End Interview';
+                    isSubmitting = false;
                 }
             } catch (error) {
                 console.log('Submission error:', error);
                 addMessage('ai', `Error: ${error.message}`);
                 submitBtn.disabled = false;
+                submitBtn.textContent = 'End Interview';
+                isSubmitting = false;
             } finally {
                 showLoading(false);
             }

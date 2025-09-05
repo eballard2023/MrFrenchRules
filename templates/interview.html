@@ -95,6 +95,7 @@
             box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
             cursor: pointer;
             min-width: 140px;
+            user-select: none;
         }
 
         .header-btn:hover:not(:disabled) {
@@ -466,8 +467,8 @@
     <div class="container">
         <div class="header">
             <div class="header-actions">
-                <button class="btn btn-danger header-btn" id="submitBtn" onclick="submitInterview()" disabled>
-                    <i class="fas fa-check"></i> End Interview
+                <button class="header-btn" id="submitBtn" onclick="submitInterview()">
+                    End Interview
                 </button>
             </div>
             <div class="header-content">

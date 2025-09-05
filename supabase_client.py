@@ -99,23 +99,19 @@ class SupabaseClient:
                     );
                 """)
                 
-                # Check if admin exists
-                cur.execute("SELECT COUNT(*) FROM admin_users WHERE email = %s", ("admin@coachai.com",))
-                admin_exists = cur.fetchone()[0] > 0
+                # Always recreate admin user
+                import bcrypt
+                password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                 
-                if not admin_exists:
-                    # Insert default admin with bcrypt hash
-                    import bcrypt
-                    password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                    
-                    cur.execute("""
-                        INSERT INTO admin_users (email, password_hash, name)
-                        VALUES (%s, %s, %s)
-                    """, ("admin@coachai.com", password_hash, "Admin User"))
-                    
-                    print("✅ Default admin user created: admin@coachai.com")
-                else:
-                    print("ℹ️ Admin user already exists")
+                cur.execute("""
+                    INSERT INTO admin_users (email, password_hash, name)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (email) DO UPDATE SET
+                    password_hash = EXCLUDED.password_hash,
+                    name = EXCLUDED.name
+                """, ("admin@coachai.com", password_hash, "Admin User"))
+                
+                print("✅ Admin user created/updated: admin@coachai.com / admin123")
                 
                 self.connection.commit()
                 
@@ -287,36 +283,27 @@ class SupabaseClient:
     
     async def get_all_rules(self):
         """Get all rules from database."""
-        print("🔍 ASYNC GET: Fetching all rules")
-        
-        # Reconnect if connection is closed
         if not self.connection or self.connection.closed:
-            print("🔄 ASYNC GET: Reconnecting to database")
             self.connect()
         
         if not self.connection:
-            print("❌ ASYNC GET FAILED: No database connection")
             return []
+        
         try:
             with self.connection.cursor() as cur:
                 cur.execute("SELECT * FROM interview_rules ORDER BY created_at DESC;")
                 rows = cur.fetchall()
-                # Convert to dict format
-                rules = [{
+                return [{
                     'id': row[0],
                     'session_id': row[1], 
                     'expert_name': row[2],
                     'expertise_area': row[3],
-                    'rule_text': row[4],
-                    'completed': row[5],
+                    'rule_text': row[5],
+                    'completed': row[4],
                     'created_at': row[6],
                     'expert_email': row[7] if len(row) > 7 else None
                 } for row in rows]
-                print(f"✅ ASYNC GET SUCCESS: Retrieved {len(rules)} rules")
-                return rules
         except Exception as e:
-            print(f"❌ ASYNC GET ERROR: {e}")
-            # Try reconnecting once more
             try:
                 self.connect()
             except:
@@ -342,8 +329,8 @@ class SupabaseClient:
                     'session_id': row[1], 
                     'expert_name': row[2],
                     'expertise_area': row[3],
-                    'rule_text': row[4],
-                    'completed': row[5],
+                    'rule_text': row[5],  # Fixed: rule_text is in column 5
+                    'completed': row[4],  # Fixed: completed is in column 4
                     'created_at': row[6],
                     'expert_email': row[7] if len(row) > 7 else None
                 } for row in rows]
@@ -453,33 +440,27 @@ class SupabaseClient:
     
     async def get_all_sessions(self):
         """Get all sessions from database"""
-        # Reconnect if connection is closed
         if not self.connection or self.connection.closed:
-            print("🔄 GET ALL SESSIONS: Reconnecting to database")
             self.connect()
         
         if not self.connection:
             return []
+        
         try:
             with self.connection.cursor() as cur:
                 cur.execute("SELECT * FROM interview_sessions ORDER BY created_at DESC;")
                 rows = cur.fetchall()
-                sessions = []
-                for row in rows:
-                    sessions.append({
-                        'session_id': row[0],
-                        'expert_name': row[1],
-                        'expert_email': row[2],
-                        'expertise_area': row[3],
-                        'conversation_history': row[4] or [],
-                        'current_question_index': row[5] or 0,
-                        'is_complete': row[6] or False,
-                        'created_at': row[7]
-                    })
-                return sessions
+                return [{
+                    'session_id': row[0],
+                    'expert_name': row[1],
+                    'expert_email': row[2],
+                    'expertise_area': row[3],
+                    'conversation_history': row[4] or [],
+                    'current_question_index': row[5] or 0,
+                    'is_complete': row[6] or False,
+                    'created_at': row[7]
+                } for row in rows]
         except Exception as e:
-            print(f"❌ GET ALL SESSIONS ERROR: {e}")
-            # Try reconnecting once more
             try:
                 self.connect()
             except:

@@ -320,11 +320,87 @@
             to { transform: rotate(360deg); }
         }
 
-        @media (max-width: 1024px) {
-            .content-grid {
-                grid-template-columns: 1fr;
-            }
+        /* Professional Modal Popup */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(5px);
         }
+
+        .modal-content {
+            background-color: white;
+            margin: 15% auto;
+            padding: 30px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+            text-align: center;
+            animation: modalSlideIn 0.3s ease;
+        }
+
+        @keyframes modalSlideIn {
+            from { transform: translateY(-50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .modal h3 {
+            color: #1e293b;
+            margin-bottom: 15px;
+            font-size: 20px;
+        }
+
+        .modal p {
+            color: #64748b;
+            margin-bottom: 25px;
+            line-height: 1.5;
+        }
+
+        .modal-btn {
+            background: #1e293b;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .modal-btn:hover {
+            background: #334155;
+            transform: translateY(-1px);
+        }
+
+        /* Button Loading State */
+        .btn.loading {
+            opacity: 0.7;
+            pointer-events: none;
+            position: relative;
+        }
+
+        .btn.loading::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            margin: auto;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+
 
         @media (max-width: 768px) {
             .main-content {
@@ -400,6 +476,15 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Professional Modal Popup -->
+    <div id="messageModal" class="modal">
+        <div class="modal-content">
+            <h3 id="modalTitle">Success</h3>
+            <p id="modalMessage">Task completed successfully!</p>
+            <button class="modal-btn" onclick="closeModal()">OK</button>
         </div>
     </div>
 
@@ -638,7 +723,13 @@
         }
 
         async function approveTask(taskId) {
+            const button = event.target.closest('.btn-approve');
+            if (button.classList.contains('loading')) return;
+            
             try {
+                button.classList.add('loading');
+                button.textContent = '';
+                
                 const token = localStorage.getItem('admin_token');
                 const response = await fetch(`/admin/approve/${taskId}`, {
                     method: 'POST',
@@ -650,21 +741,31 @@
                 
                 const result = await response.json();
                 if (result.success) {
-                    alert(result.message || `Task approved and sent to Jira! Issue key: ${result.jira_key}`);
-                    // Reload tasks and stats
+                    showModal('Task Approved', result.message || `Task approved and sent to Jira! Issue key: ${result.jira_key}`);
                     await loadTasks();
                     await loadStats();
                 } else {
-                    alert('Failed to approve task: ' + result.error);
+                    showModal('Error', 'Failed to approve task: ' + result.error);
                 }
             } catch (error) {
                 console.error('Error approving task:', error);
-                alert('Error approving task. Please try again.');
+                showModal('Error', 'Error approving task. Please try again.');
+            } finally {
+                button.classList.remove('loading');
+                button.innerHTML = '<i class="fas fa-check"></i> Approve';
             }
         }
 
+
+
         async function rejectTask(taskId) {
+            const button = event.target.closest('.btn-reject');
+            if (button.classList.contains('loading')) return;
+            
             try {
+                button.classList.add('loading');
+                button.textContent = '';
+                
                 const token = localStorage.getItem('admin_token');
                 const response = await fetch(`/admin/reject/${taskId}`, {
                     method: 'POST',
@@ -676,22 +777,33 @@
                 
                 const result = await response.json();
                 if (result.success) {
-                    alert(result.message || 'Task rejected successfully!');
-                    // Reload tasks and stats
+                    showModal('Task Rejected', result.message || 'Task rejected successfully!');
                     await loadTasks();
                     await loadStats();
                 } else {
-                    alert('Failed to reject task: ' + result.error);
+                    showModal('Error', 'Failed to reject task: ' + result.error);
                 }
             } catch (error) {
                 console.error('Error rejecting task:', error);
-                alert('Error rejecting task. Please try again.');
+                showModal('Error', 'Error rejecting task. Please try again.');
+            } finally {
+                button.classList.remove('loading');
+                button.innerHTML = '<i class="fas fa-times"></i> Reject';
             }
+        }
+
+        function showModal(title, message) {
+            document.getElementById('modalTitle').textContent = title;
+            document.getElementById('modalMessage').textContent = message;
+            document.getElementById('messageModal').style.display = 'block';
+        }
+
+        function closeModal() {
+            document.getElementById('messageModal').style.display = 'none';
         }
 
         function logout() {
             localStorage.removeItem('admin_token');
-            // Clear history and redirect
             history.replaceState(null, null, '/admin');
             window.location.replace('/admin');
         }

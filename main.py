@@ -969,78 +969,62 @@ async def admin_dashboard(request: Request):
 async def get_admin_conversations(current_admin = Depends(get_current_admin)):
     """Get all conversations for admin panel from Supabase"""
     try:
+        if not supabase_client.connected:
+            return {"conversations": []}
+        
+        all_sessions = await supabase_client.get_all_sessions()
         conversations = []
         
-        # Get from Supabase database
-        if supabase_client.connected:
-            try:
-                print("🔍 ADMIN: Getting conversations from Supabase")
-                # Get all sessions from database
-                all_sessions = await supabase_client.get_all_sessions()
-                print(f"🔍 DEBUG: Found {len(all_sessions)} total sessions in database")
-                for session in all_sessions:
-                    # Only include sessions with actual conversation history
-                    conversation_history = session.get('conversation_history', [])
-                    if conversation_history and len(conversation_history) > 0:
-                        conversations.append({
-                            "session_id": session['session_id'],
-                            "expert_name": session.get('expert_name', 'Unknown Expert'),
-                            "expertise_area": session.get('expertise_area', 'General'),
-                            "completed": session.get('is_complete', False),
-                            "messages": conversation_history
-                        })
-                print(f"✅ ADMIN: Retrieved {len(conversations)} conversations with history from Supabase")
-            except Exception as e:
-                print(f"❌ Supabase: Error getting conversations: {e}")
-                # Add debug info
-                print(f"Debug: Total sessions found: {len(all_sessions) if 'all_sessions' in locals() else 0}")
-        else:
-            print(f"⚠️ Supabase: Database not available for getting conversations")
-            # Return empty conversations if database not available
-            conversations = []
+        for session in all_sessions:
+            conversation_history = session.get('conversation_history', [])
+            if conversation_history:
+                conversations.append({
+                    "session_id": session['session_id'],
+                    "expert_name": session.get('expert_name', 'Unknown Expert'),
+                    "expertise_area": session.get('expertise_area', 'General'),
+                    "completed": session.get('is_complete', False),
+                    "messages": conversation_history
+                })
         
         return {"conversations": conversations}
         
     except Exception as e:
         logger.error(f"Error getting admin conversations: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"conversations": []}
 
 @app.get("/admin/tasks")
 async def get_admin_tasks(current_admin = Depends(get_current_admin)):
     """Get all tasks for admin panel"""
     try:
+        if not supabase_client.connected:
+            return {"tasks": []}
+        
+        db_rules = await supabase_client.get_all_rules()
         tasks = []
         
-        # Get tasks from database if connected
-        if supabase_client.connected:
-            db_rules = await supabase_client.get_all_rules()
-            for rule in db_rules:
-                # Fix status logic: completed=False means pending, completed=True means approved
-                completed = rule.get('completed', False)
-                status = "approved" if completed else "pending"
-                
-                # Ensure rule_text is a string
-                rule_text = str(rule.get('rule_text', 'No rule text'))
-                
-                tasks.append({
-                    "id": str(rule['id']),
-                    "session_id": str(rule['session_id']),
-                    "expert_name": str(rule.get('expert_name', 'Expert User')),
-                    "task_text": rule_text,
-                    "category": str(rule.get('expertise_area', 'General')),
-                    "priority": "medium",
-                    "status": status
-                })
-
+        for rule in db_rules:
+            completed = rule.get('completed', False)
+            status = "approved" if completed else "pending"
+            
+            raw_rule_text = rule.get('rule_text')
+            rule_text = str(raw_rule_text) if raw_rule_text else "No rule text available"
+            
+            tasks.append({
+                "id": str(rule['id']),
+                "session_id": str(rule['session_id']),
+                "expert_name": str(rule.get('expert_name', 'Expert User')),
+                "task_text": rule_text,
+                "category": str(rule.get('expertise_area', 'General')),
+                "priority": "medium",
+                "status": status
+            })
         
-        # Sort tasks: pending first, then approved
         tasks.sort(key=lambda x: (x['status'] != 'pending', x['id']))
-        
         return {"tasks": tasks}
         
     except Exception as e:
         logger.error(f"Error getting admin tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"tasks": []}
 
 @app.post("/admin/tasks/action")
 async def admin_task_action(action_request: TaskActionRequest, current_admin = Depends(get_current_admin)):
@@ -1169,26 +1153,17 @@ async def reject_task(task_id: str, current_admin = Depends(get_current_admin)):
 async def get_admin_stats(current_admin = Depends(get_current_admin)):
     """Get dashboard statistics"""
     try:
-        total_interviews = 0
-        total_rules = 0
-        pending_tasks = 0
-        approved_tasks = 0
+        if not supabase_client.connected:
+            return {"total_interviews": 0, "pending_tasks": 0, "approved_tasks": 0, "rejected_tasks": 0}
         
-        # Get stats from Supabase
-        if supabase_client.connected:
-            try:
-                db_rules = await supabase_client.get_all_rules()
-                total_rules = len(db_rules)
-                approved_tasks = len([r for r in db_rules if r.get('completed', False)])
-                pending_tasks = total_rules - approved_tasks
-                # Count unique sessions for total interviews
-                unique_sessions = set(r['session_id'] for r in db_rules)
-                total_interviews = len(unique_sessions)
-            except Exception as e:
-                logger.warning(f"Database stats error: {e}")
+        db_rules = await supabase_client.get_all_rules()
+        total_rules = len(db_rules)
+        approved_tasks = sum(1 for r in db_rules if r.get('completed', False))
+        pending_tasks = total_rules - approved_tasks
+        unique_sessions = len(set(r['session_id'] for r in db_rules))
         
         return {
-            "total_interviews": total_interviews,
+            "total_interviews": unique_sessions,
             "pending_tasks": pending_tasks,
             "approved_tasks": approved_tasks,
             "rejected_tasks": total_rules
@@ -1196,7 +1171,7 @@ async def get_admin_stats(current_admin = Depends(get_current_admin)):
         
     except Exception as e:
         logger.error(f"Error getting admin stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"total_interviews": 0, "pending_tasks": 0, "approved_tasks": 0, "rejected_tasks": 0}
 
 if __name__ == "__main__":
     import uvicorn

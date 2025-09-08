@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -31,7 +31,30 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-app = FastAPI(title="AI Coach Interview Model", version="1.0.0")
+# Configure FastAPI docs exposure by environment
+is_prod = os.getenv("ENV", "development") == "production"
+
+app = FastAPI(
+    title="AI Coach Interview Model",
+    version="1.0.0",
+    docs_url=None if is_prod else "/docs",
+    redoc_url=None if is_prod else "/redoc",
+    openapi_url=None if is_prod else "/openapi.json",
+)
+
+# In production, provide friendly redirects for disabled docs endpoints
+if is_prod:
+    @app.get("/docs", include_in_schema=False)
+    async def _docs_redirect():
+        return RedirectResponse(url="/")
+
+    @app.get("/redoc", include_in_schema=False)
+    async def _redoc_redirect():
+        return RedirectResponse(url="/")
+
+    @app.get("/openapi.json", include_in_schema=False)
+    async def _openapi_blocked():
+        return JSONResponse(status_code=404, content={"detail": "OpenAPI schema is disabled in production"})
 
 # Set up OpenAI client
 from openai import AsyncOpenAI
@@ -1203,9 +1226,11 @@ async def get_admin_stats(current_admin = Depends(get_current_admin)):
 if __name__ == "__main__":
     import uvicorn
     print("🚀 Starting AI Coach Interview System...")
-    print("🌐 Binding to: 0.0.0.0:8001")
-    print("🔗 Interview Interface: http://localhost:8001")
-    print("🔗 Admin Panel: http://localhost:8001/admin")
+    port = int(os.getenv("PORT", 8003))
+    print(f"🌐 Binding to: 0.0.0.0:{port}")
+    print(f"🔗 Interview Interface: http://localhost:{port}")
+    print(f"🔗 Admin Panel: http://localhost:{port}/admin")
     print("🔑 Admin Credentials: admin@coachai.com / admin123")
     print("🔧 Manual admin creation: POST /admin/create-user")
-    uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")
+    port = int(os.getenv("PORT", 8003))
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

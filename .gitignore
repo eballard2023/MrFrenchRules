@@ -43,6 +43,7 @@ extracted_rules_*.json
 *.log
 .env.local
 .env.production
+message (2).txt
 
 # Database
 *.db

@@ -613,16 +613,17 @@ async def chat_with_interviewer(chat_message: ChatMessage):
     is_doc_query = any(pattern in chat_message.message.lower() for pattern in doc_query_patterns)
     
     if is_doc_query:
-        print(f"🔍 DOC QUERY DETECTED: '{chat_message.message}' in session {session_id}")
+        if os.getenv("ENV", "development") != "production":
+            print(f"🔍 DOC QUERY DETECTED: '{chat_message.message}' in session {session_id}")
         # Get session documents from ChromaDB
         try:
             doc_processor = get_document_processor(client)
             session_docs_info = doc_processor.get_session_documents(session_id)
-            print(f"📄 SESSION DOCS: {session_docs_info}")
             
             if session_docs_info['documents']:
                 doc_titles = [doc['title'] for doc in session_docs_info['documents']]
-                print(f"✅ FOUND DOCUMENTS: {doc_titles}")
+                if os.getenv("ENV", "development") != "production":
+                    print(f"✅ FOUND DOCUMENTS: {doc_titles}")
                 
                 # Simple document retrieval - get all chunks for the session
                 try:
@@ -630,32 +631,50 @@ async def chat_with_interviewer(chat_message: ChatMessage):
                     chroma_client = get_chroma_client()
                     
                     # Get ALL chunks for the session
-                    print(f"🔍 DEBUG: Retrieving documents for session_id: {session_id}")
                     all_chunks = chroma_client.collection.get(
                         where={"session_id": session_id}
                     )
-                    print(f"🔍 DEBUG: Found {len(all_chunks.get('documents', []))} chunks for session {session_id}")
+                    if os.getenv("ENV", "development") != "production":
+                        print(f"🔍 DEBUG: Found {len(all_chunks.get('documents', []))} chunks for session {session_id}")
                     
                     doc_content_preview = ""
                     if all_chunks['documents']:
-                        print(f"🔍 Retrieved {len(all_chunks['documents'])} total chunks from documents")
+                        if os.getenv("ENV", "development") != "production":
+                            print(f"🔍 Retrieved {len(all_chunks['documents'])} total chunks from documents")
                         
                         # Limit to first 8 chunks for performance (about 2000 tokens max)
                         max_chunks_for_display = 8
                         chunks_to_show = min(len(all_chunks['documents']), max_chunks_for_display)
                         
-                        # Collect all document content and provide actual content
-                        all_content = []
+                        # Organize content by document for better clarity
+                        doc_content_map = {}
                         for i, doc_content in enumerate(all_chunks['documents']):
-                            all_content.append(doc_content)
+                            metadata = all_chunks['metadatas'][i] if all_chunks['metadatas'] else {}
+                            doc_title = metadata.get('title', 'Unknown Document')
+                            
+                            if doc_title not in doc_content_map:
+                                doc_content_map[doc_title] = []
+                            doc_content_map[doc_title].append(doc_content)
                         
-                        # Use actual document content instead of generic summary
-                        combined_content = " ".join(all_content)
+                        # Create organized response showing content from each document
+                        doc_sections = []
+                        for doc_title, chunks in doc_content_map.items():
+                            # Smart sampling for document query response too
+                            if len(chunks) <= 4:
+                                # Small document - include all content
+                                doc_content = " ".join(chunks)
+                            else:
+                                # Larger document - sample from beginning, middle, end
+                                sample_chunks = chunks[:2] + chunks[len(chunks)//2-1:len(chunks)//2+1] + chunks[-2:]
+                                doc_content = " ".join(sample_chunks)
+                                if len(chunks) > 4:
+                                    doc_content += f"\n\n[Note: This document has {len(chunks)} total sections. Showing key sections above.]"
+                            
+                            doc_sections.append(f"**{doc_title}:**\n{doc_content}")
                         
-                        # Limit content to avoid overwhelming the response (first 2000 characters)
-                        content_preview = combined_content[:2000] + "..." if len(combined_content) > 2000 else combined_content
+                        combined_content = "\n\n".join(doc_sections)
                         
-                        ai_message = f"Here's what I found in your document '{', '.join(doc_titles)}':\n\n{content_preview}\n\nThis is the actual content from your document. What would you like to know about it?"
+                        ai_message = f"Here's what I found in your documents:\n\n{combined_content}\n\nThis is the actual content from your uploaded documents. What would you like to know about them?"
                     else:
                         ai_message = f"I can see your document '{', '.join(doc_titles)}' but couldn't retrieve its content. Would you like to try asking again or continue with the interview questions?"
                     
@@ -808,23 +827,48 @@ async def chat_with_interviewer(chat_message: ChatMessage):
                             doc_titles.add(doc_title)
                         
                         if doc_titles:
-                            # Get actual document content for context
+                            # Get actual document content for context - ensure we get content from ALL documents
                             doc_context_parts = []
-                            for i, doc_content in enumerate(all_chunks['documents'][:3]):  # First 3 chunks for context
+                            
+                            # Group chunks by document title to ensure we get content from each document
+                            doc_content_map = {}
+                            for i, doc_content in enumerate(all_chunks['documents']):
                                 metadata = all_chunks['metadatas'][i] if all_chunks['metadatas'] else {}
                                 doc_title = metadata.get('title', 'Unknown Document')
-                                # Limit each chunk to 300 characters
-                                content_preview = doc_content[:300] + "..." if len(doc_content) > 300 else doc_content
-                                doc_context_parts.append(f"From {doc_title}: {content_preview}")
+                                
+                                if doc_title not in doc_content_map:
+                                    doc_content_map[doc_title] = []
+                                doc_content_map[doc_title].append(doc_content)
+                            
+                            # Get comprehensive content from each document - smart sampling to balance performance
+                            for doc_title, chunks in doc_content_map.items():
+                                # Smart sampling: take chunks from beginning, middle, and end
+                                if len(chunks) <= 3:
+                                    # Small document - include all chunks
+                                    chunks_to_include = chunks
+                                elif len(chunks) <= 6:
+                                    # Medium document - take first 2, middle 2, last 2
+                                    chunks_to_include = chunks[:2] + chunks[len(chunks)//2-1:len(chunks)//2+1] + chunks[-2:]
+                                else:
+                                    # Large document - take first 3, middle 2, last 3
+                                    chunks_to_include = chunks[:3] + chunks[len(chunks)//2-1:len(chunks)//2+1] + chunks[-3:]
+                                
+                                for i, chunk_content in enumerate(chunks_to_include):
+                                    # Moderate chunk size for good performance
+                                    content_preview = chunk_content[:500] + "..." if len(chunk_content) > 500 else chunk_content
+                                    doc_context_parts.append(f"From {doc_title} (section {i+1}): {content_preview}")
                             
                             doc_header = f"**UPLOADED DOCUMENTS:** {', '.join(doc_titles)}\n\n**DOCUMENT CONTEXT:**\n"
                             doc_context = "\n\n" + doc_header + "\n\n".join(doc_context_parts)
-                            logger.info(f"📚 Added actual document context from {len(doc_titles)} documents")
-                            print(f"🔍 FOUND DOCS: Actual content context from {list(doc_titles)}")
+                            if os.getenv("ENV", "development") != "production":
+                                logger.info(f"📚 Added actual document context from {len(doc_titles)} documents")
+                                print(f"🔍 FOUND DOCS: Actual content context from {list(doc_titles)}")
                         else:
-                            print(f"🔍 NO DOCS FOUND for session {session_id}")
+                            if os.getenv("ENV", "development") != "production":
+                                print(f"🔍 NO DOCS FOUND for session {session_id}")
                     else:
-                        print(f"🔍 NO DOCUMENTS in session {session_id} - skipping document search")
+                        if os.getenv("ENV", "development") != "production":
+                            print(f"🔍 NO DOCUMENTS in session {session_id} - skipping document search")
                         
                 except Exception as e:
                     print(f"❌ DOCUMENT CONTEXT ERROR: {e}")
@@ -834,17 +878,20 @@ async def chat_with_interviewer(chat_message: ChatMessage):
                 
         except Exception as e:
             # ChromaDB might not be available or connected - this is optional functionality
-            logger.warning(f"⚠️ Document context search failed: {e}")
-            print(f"❌ DOCUMENT SEARCH ERROR: {e}")
+            if os.getenv("ENV", "development") != "production":
+                logger.warning(f"⚠️ Document context search failed: {e}")
+                print(f"❌ DOCUMENT SEARCH ERROR: {e}")
             pass
         
         # Enhanced system prompt with document context
         final_system_prompt = enhanced_system_prompt
         if doc_context:
-            final_system_prompt += f"\n\n{doc_context}\n\nYou can reference and discuss this document content naturally during the interview. If the expert asks about the document or mentions something related to it, feel free to engage with that context."
-            print(f"📋 DOCUMENT CONTEXT ADDED TO PROMPT: {len(doc_context)} characters")
+            final_system_prompt += f"\n\n{doc_context}\n\nIMPORTANT: Only reference the document content provided above. Do not mention or reference any documents from previous sessions or conversations. If the expert asks about a document, only discuss the content from the documents listed above."
+            if os.getenv("ENV", "development") != "production":
+                print(f"📋 DOCUMENT CONTEXT ADDED TO PROMPT: {len(doc_context)} characters")
         else:
-            print("📋 NO DOCUMENT CONTEXT - AI should not reference any documents")
+            if os.getenv("ENV", "development") != "production":
+                print("📋 NO DOCUMENT CONTEXT - AI should not reference any documents")
         
         # Get AI's next question/response
         messages = [{"role": "system", "content": final_system_prompt}] + conversation_history
@@ -969,10 +1016,10 @@ async def submit_interview(session_id: str):
                     
                     sorted_chunks.sort(key=lambda x: x[0])
                     
-                    # Combine content from all chunks (limit for performance)
+                    # Combine content from all chunks - include more for comprehensive rule extraction
                     chunk_count = 0
                     for _, content, title in sorted_chunks:
-                        if chunk_count >= 20:  # Limit to first 20 chunks for performance
+                        if chunk_count >= 50:  # Increased limit for better rule extraction
                             combined_content += "\n[Additional content truncated for processing...]"
                             break
                         combined_content += f"{content}\n\n"
@@ -988,11 +1035,13 @@ The expert also provided the following document(s): {', '.join(doc_titles)}
 {combined_content.strip()}
 
 **DOCUMENT EXTRACTION GUIDANCE:**
-- Extract additional rules from the document content that are relevant to Mr. French's role
+- CRITICAL: Extract rules from BOTH the conversation AND the document content above
 - Look for specific strategies, techniques, or guidelines mentioned in the documents
 - Convert document advice into "Mr. French should..." format
 - Only extract rules that apply to child behavior, family communication, or task management
-- Combine insights from both the conversation AND the documents
+- If the documents contain valuable expert knowledge that should be converted into actionable rules add that too
+- If the conversation is short but documents contain rich content, extract rules primarily from the documents
+- Each rule should start with "Mr. French should..." and be actionable for the AI assistant
 """
                     
         except Exception as e:
@@ -1011,15 +1060,19 @@ Mr. French is a conversational AI family assistant that helps manage children's 
 Mr. French uses a zone system: Red (frustrated/stressed), Green (normal), Blue (tired/low energy).
 
 **EXTRACTION RULES:**
-- ONLY extract rules if the expert provided specific behavioral advice or recommendations
-- If the expert gave no meaningful advice or just answered basic questions, return "NONE"
+- CRITICAL: Extract rules from BOTH the conversation AND any provided document content
+- If documents are provided, they contain valuable expert knowledge that MUST be converted into rules
+- If the conversation is short but documents contain rich content, extract rules primarily from the documents
+- ONLY extract rules if the expert provided specific behavioral advice or recommendations (from conversation OR documents)
+- If neither conversation nor documents contain meaningful advice, return "NONE"
 - Ignore general interview questions and AI interviewer responses
 - Extract actionable rules Mr. French can implement
 - Each rule should start with "Mr. French should..."
 - Focus on child behavior management, communication strategies, and family dynamics
 - Ignore meta-conversation about the interview itself
-- DO NOT generate rules from your own knowledge - only from what the expert explicitly stated
-- If documents are provided, also extract relevant rules from the document content
+- DO NOT generate rules from your own knowledge - only from what the expert explicitly stated in conversation OR documents
+- Look for specific strategies, techniques, or guidelines in the documents
+- Convert document advice into "Mr. French should..." format
 
 **EXAMPLES:**
 - "Mr. French should use calm, reassuring language when a child is in the red zone"
@@ -1029,6 +1082,8 @@ Mr. French uses a zone system: Red (frustrated/stressed), Green (normal), Blue (
 **CONVERSATION:**
 {conversation_text}
 {document_context}
+
+**IMPORTANT:** If no actionable behavioral rules can be extracted from either the conversation or documents, respond with exactly "NONE". Do not create generic or made-up rules.
 
 **EXTRACTED RULES:"""
         
@@ -1044,48 +1099,72 @@ Mr. French uses a zone system: Red (frustrated/stressed), Green (normal), Blue (
         
         # Parse task statements
         tasks_text = response.choices[0].message.content.strip()
-        if tasks_text.upper() == 'NONE' or not tasks_text:
+        if os.getenv("ENV", "development") != "production":
+            print(f"🤖 RAW EXTRACTION RESULT: {tasks_text}")
+        
+        if tasks_text.upper() == 'NONE' or not tasks_text or len(tasks_text.strip()) < 10:
             task_statements = []
         else:
-            task_statements = [task.strip() for task in tasks_text.split('\n') if task.strip() and not task.strip().upper().startswith('NONE')]
+            # Split by lines and filter out empty/invalid entries
+            raw_tasks = [task.strip() for task in tasks_text.split('\n') if task.strip()]
+            task_statements = []
+            
+            for task in raw_tasks:
+                # Skip if it's just "NONE" or similar
+                if task.upper() in ['NONE', 'NO RULES', 'NO BEHAVIORAL RULES', 'N/A']:
+                    continue
+                # Skip if it's too short to be meaningful
+                if len(task) < 20:
+                    continue
+                # Skip if it doesn't contain behavioral content
+                if not any(term in task.lower() for term in ['child', 'parent', 'family', 'behavior', 'task', 'routine', 'mr. french']):
+                    continue
+                task_statements.append(task)
+            
+            if os.getenv("ENV", "development") != "production":
+                print(f"✅ FILTERED RULES: {len(task_statements)} valid rules extracted from {len(raw_tasks)} raw lines")
         
-        print(f"🤖 TASK EXTRACTION: Starting for session {session_id}")
-        print(f"📝 CONVERSATION LENGTH: {len(conversation_text)} characters")
-        print("🧠 GPT EXTRACTION: Calling GPT-4o-mini for task extraction")
-        print(f"💬 CONVERSATION PREVIEW: {conversation_text[:200]}...")
+        if os.getenv("ENV", "development") != "production":
+            print(f"🤖 TASK EXTRACTION: Starting for session {session_id}")
+            print(f"📝 CONVERSATION LENGTH: {len(conversation_text)} characters")
+            print("🧠 GPT EXTRACTION: Calling GPT-4o-mini for task extraction")
+            print(f"💬 CONVERSATION PREVIEW: {conversation_text[:200]}...")
         
         # Tasks will be stored in database only
         
-        print(f"✅ GPT EXTRACTION SUCCESS: {len(task_statements)} tasks extracted")
-        if len(task_statements) > 0:
-            print(f"📝 SAMPLE TASK: {task_statements[0][:100]}...")
-        else:
-            print("⚠️ NO TASKS EXTRACTED - Check conversation content")
+        if os.getenv("ENV", "development") != "production":
+            print(f"✅ GPT EXTRACTION SUCCESS: {len(task_statements)} tasks extracted")
+            if len(task_statements) > 0:
+                print(f"📝 SAMPLE TASK: {task_statements[0][:100]}...")
+            else:
+                print("⚠️ NO TASKS EXTRACTED - Check conversation content")
         
-        # Save each task to Supabase
-        if supabase_client.connected:
-            print(f"💾 SUPABASE SAVE: Saving {len(task_statements)} tasks to database")
+        # Save each task to Supabase (only if we have valid rules)
+        if supabase_client.connected and task_statements:
+            if os.getenv("ENV", "development") != "production":
+                print(f"💾 SUPABASE SAVE: Saving {len(task_statements)} tasks to database")
             for i, task in enumerate(task_statements, 1):
-                print(f"💾 SAVING TASK {i}/{len(task_statements)}: {task[:50]}...")
+                if os.getenv("ENV", "development") != "production":
+                    print(f"💾 SAVING TASK {i}/{len(task_statements)}: {task[:50]}...")
                 rule_id = await supabase_client.save_interview_rule(
                     session_id=session_id,
                     expert_name=session_data['expert_name'],
                     expertise_area=session_data['expertise_area'],
                     rule_text=task
                 )
-                print(f"💾 RULE SAVED: ID {rule_id} for session {session_id}")
+                if os.getenv("ENV", "development") != "production":
+                    print(f"💾 RULE SAVED: ID {rule_id} for session {session_id}")
+        elif not task_statements:
+            if os.getenv("ENV", "development") != "production":
+                print("ℹ️ NO RULES TO SAVE: No actionable behavioral rules were extracted")
         else:
-            print("⚠️ SUPABASE UNAVAILABLE: Tasks saved to memory only")
+            if os.getenv("ENV", "development") != "production":
+                print("⚠️ SUPABASE UNAVAILABLE: Tasks saved to memory only")
         
         logger.info(f"✅ Extracted {len(task_statements)} tasks for session {session_id}")
         
-        print(f"🎉 INTERVIEW COMPLETE: Session {session_id} finished with {len(task_statements)} tasks")
-        return {
-            "message": f"Thank you for the interview. {len(task_statements)} tasks have been extracted.",
-            "status": "completed",
-            "tasks_extracted": len(task_statements),
-            "tasks": task_statements
-        }
+        if os.getenv("ENV", "development") != "production":
+            print(f"🎉 INTERVIEW COMPLETE: Session {session_id} finished with {len(task_statements)} tasks")
         
     except Exception as e:
         logger.error(f"❌ Error processing interview submission: {e}")
@@ -1327,32 +1406,7 @@ async def admin_login_page(request: Request):
     """Serve admin login page"""
     return templates.TemplateResponse("admin_login.html", {"request": request})
 
-@app.post("/admin/create-user")
-async def create_admin_user():
-    """Manually create admin user - for deployment troubleshooting"""
-    try:
-        if not supabase_client.connected:
-            supabase_client.connect()
-        
-        if not supabase_client.connection:
-            return {"success": False, "error": "Database not connected"}
-        
-        import bcrypt
-        password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        
-        with supabase_client.connection.cursor() as cur:
-            cur.execute("""
-                INSERT INTO admin_users (email, password_hash, name)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (email) DO UPDATE SET
-                password_hash = EXCLUDED.password_hash,
-                name = EXCLUDED.name
-            """, ("admin@coachai.com", password_hash, "Admin User"))
-            supabase_client.connection.commit()
-        
-        return {"success": True, "message": "Admin user created: admin@coachai.com / admin123"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+# Removed insecure manual admin creation endpoint for production security
 
 @app.post("/admin/login")
 async def admin_login(login_request: AdminLoginRequest):
@@ -1591,12 +1645,11 @@ async def get_admin_stats(current_admin = Depends(get_current_admin)):
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting AI Coach Interview System...")
-    port = int(os.getenv("PORT", 8003))
-    print(f"🌐 Binding to: 0.0.0.0:{port}")
-    print(f"🔗 Interview Interface: http://localhost:{port}")
-    print(f"🔗 Admin Panel: http://localhost:{port}/admin")
-    print("🔑 Admin Credentials: admin@coachai.com / admin123")
-    print("🔧 Manual admin creation: POST /admin/create-user")
+    if os.getenv("ENV", "development") != "production":
+        print("🚀 Starting AI Coach Interview System...")
+        port = int(os.getenv("PORT", 8003))
+        print(f"🌐 Binding to: 0.0.0.0:{port}")
+        print(f"🔗 Interview Interface: http://localhost:{port}")
+        print(f"🔗 Admin Panel: http://localhost:{port}/admin")
     port = int(os.getenv("PORT", 8003))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

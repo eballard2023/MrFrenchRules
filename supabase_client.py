@@ -12,6 +12,13 @@ import asyncio
 # Load environment variables
 load_dotenv()
 
+# Disable noisy prints in production for this module
+IS_PROD = os.getenv("ENV", "development") == "production"
+if IS_PROD:
+    def _noop(*args, **kwargs):
+        return None
+    print = _noop  # type: ignore
+
 # Configure DNS to use Google's public DNS
 try:
     import dns.resolver
@@ -27,11 +34,13 @@ DB_USER = os.getenv("user")
 DB_PASSWORD = os.getenv("password")
 DB_PORT = os.getenv("port", "6543")
 
-print(f"DB_HOST: {DB_HOST}")
-print(f"DB_NAME: {DB_NAME}")
-print(f"DB_USER: {DB_USER}")
-print(f"DB_PASSWORD: {'***' if DB_PASSWORD else 'None'}")
-print(f"DB_PORT: {DB_PORT}")
+# Avoid printing secrets in production
+if os.getenv("ENV", "development") != "production":
+    print(f"DB_HOST: {DB_HOST}")
+    print(f"DB_NAME: {DB_NAME}")
+    print(f"DB_USER: {DB_USER}")
+    print(f"DB_PASSWORD: {'***' if DB_PASSWORD else 'None'}")
+    print(f"DB_PORT: {DB_PORT}")
 
 class SupabaseClient:
     def __init__(self):
@@ -163,24 +172,25 @@ class SupabaseClient:
                     );
                 """)
                 
-                # Always recreate admin user from env
+                # Create or update admin user from env if provided
                 import bcrypt
-                admin_email = os.getenv("ADMIN_EMAIL", "admin@coachai.com")
-                admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
-                password_hash = bcrypt.hashpw(admin_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                
-                cur.execute("""
-                    INSERT INTO admin_users (email, password_hash, name)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (email) DO UPDATE SET
-                    password_hash = EXCLUDED.password_hash,
-                    name = EXCLUDED.name
-                """, (admin_email, password_hash, "Admin User"))
-                
-                print(f"✅ Admin user created/updated: {admin_email} / {admin_password}")
-                
+                admin_email = os.getenv("ADMIN_EMAIL")
+                admin_password = os.getenv("ADMIN_PASSWORD")
+                if admin_email and admin_password:
+                    password_hash = bcrypt.hashpw(admin_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                    cur.execute("""
+                        INSERT INTO admin_users (email, password_hash, name)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (email) DO UPDATE SET
+                        password_hash = EXCLUDED.password_hash,
+                        name = EXCLUDED.name
+                    """, (admin_email, password_hash, "Admin User"))
+                    if os.getenv("ENV", "development") != "production":
+                        print(f"✅ Admin user created/updated for {admin_email}")
+                else:
+                    print("ℹ️ Skipping default admin creation; set ADMIN_EMAIL and ADMIN_PASSWORD to enable.")
                 conn.commit()
-                print("✅ Admin user created/updated: admin@coachai.com / admin123")
+                
                 
         except Exception as e:
             print(f"❌ Error creating admin table: {e}")

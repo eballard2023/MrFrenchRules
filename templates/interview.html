@@ -297,30 +297,165 @@
         }
 
         .attach-button {
-            background: #6b7280;
-            color: white;
+            background: transparent;
+            color: #6b7280;
             border: none;
-            border-radius: 50%;
-            width: 45px;
-            height: 45px;
+            padding: 8px;
             cursor: pointer;
+            font-size: 18px;
+            transition: all 0.3s ease;
+            margin-right: 8px;
+            border-radius: 6px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 14px;
-            transition: all 0.3s ease;
-            margin-right: 10px;
+            width: 32px;
+            height: 32px;
         }
 
         .attach-button:hover:not(:disabled) {
-            background: #4b5563;
-            transform: translateY(-2px);
+            background: rgba(59, 130, 246, 0.1);
+            color: #3b82f6;
         }
 
         .attach-button:disabled {
-            background: #d1d5db;
+            opacity: 0.4;
             cursor: not-allowed;
-            transform: none;
+        }
+
+        /* Upload Progress Modal */
+        .upload-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(5px);
+        }
+        
+        .upload-modal.show {
+            display: flex;
+        }
+
+        .upload-content {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 450px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.3);
+            transform: scale(0.9);
+            animation: modalAppear 0.3s ease forwards;
+        }
+
+        @keyframes modalAppear {
+            to {
+                transform: scale(1);
+            }
+        }
+
+        .upload-icon {
+            font-size: 48px;
+            color: #3b82f6;
+            margin-bottom: 16px;
+        }
+
+        .upload-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #1f2937;
+            margin-bottom: 8px;
+        }
+
+        .upload-subtitle {
+            color: #6b7280;
+            margin-bottom: 24px;
+        }
+
+        .progress-container {
+            background: #f3f4f6;
+            border-radius: 8px;
+            height: 8px;
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+
+        .progress-bar {
+            background: linear-gradient(90deg, #3b82f6, #2563eb);
+            height: 100%;
+            width: 0%;
+            transition: width 2s ease-in-out;
+            position: relative;
+            border-radius: 8px;
+        }
+
+        .progress-bar::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: shimmer 1.5s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-text {
+            font-size: 14px;
+            color: #6b7280;
+        }
+
+        /* Document attachment in chat */
+        .document-attachment {
+            background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
+            border: 1px solid #d1d5db;
+            border-radius: 12px;
+            padding: 16px;
+            margin: 8px 0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            max-width: 300px;
+        }
+
+        .document-icon {
+            background: #3b82f6;
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+
+        .document-info {
+            flex: 1;
+        }
+
+        .document-name {
+            font-weight: 600;
+            color: #1f2937;
+            font-size: 14px;
+            margin-bottom: 2px;
+        }
+
+        .document-type {
+            color: #6b7280;
+            font-size: 12px;
+            text-transform: uppercase;
         }
 
         .file-preview {
@@ -564,22 +699,27 @@
             
             <div class="input-area">
                 <div class="input-container">
-                    <input type="text" class="message-input" id="messageInput" placeholder="Share your expertise here..." disabled>
                     <input type="file" class="file-input" id="fileInput" accept=".pdf,.docx,.pptx,.txt" style="display: none;">
                     <button class="attach-button" id="attachBtn" onclick="openFileDialog()" title="Attach document (PDF, DOCX, PPTX, TXT)">
                         <i class="fas fa-paperclip"></i>
                     </button>
+                    <input type="text" class="message-input" id="messageInput" placeholder="Share your expertise here..." disabled>
                     <button class="send-button" id="sendBtn" onclick="sendMessage()" disabled>
                         <i class="fas fa-paper-plane"></i>
                     </button>
                 </div>
-                <div class="file-preview" id="filePreview" style="display: none;">
-                    <div class="file-info">
-                        <i class="fas fa-file-alt"></i>
-                        <span class="file-name" id="fileName"></span>
-                        <button class="remove-file" onclick="removeFile()">
-                            <i class="fas fa-times"></i>
-                        </button>
+                <!-- Upload Progress Modal -->
+                <div class="upload-modal" id="uploadModal">
+                    <div class="upload-content">
+                        <div class="upload-icon">
+                            <i class="fas fa-cloud-upload-alt"></i>
+                        </div>
+                        <div class="upload-title">Uploading Document</div>
+                        <div class="upload-subtitle" id="uploadFileName">Processing your file...</div>
+                        <div class="progress-container">
+                            <div class="progress-bar" id="progressBar"></div>
+                        </div>
+                        <div class="progress-text" id="progressText">Initializing...</div>
                     </div>
                 </div>
             </div>
@@ -590,7 +730,7 @@
         let currentSessionId = null;
         let questionNumber = 0;
         let isInterviewComplete = false;
-        let selectedFile = null;
+        // Files now upload immediately when selected
 
         const messagesContainer = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
@@ -695,17 +835,7 @@
             addMessage('system', errorMessage);
         }
 
-        function removeFile() {
-            selectedFile = null;
-            document.getElementById('filePreview').style.display = 'none';
-            document.getElementById('fileInput').value = '';
-        }
-
-        function displayFilePreview(file) {
-            selectedFile = file;
-            document.getElementById('fileName').textContent = file.name;
-            document.getElementById('filePreview').style.display = 'block';
-        }
+        // File preview functions removed - files now upload immediately
 
         async function uploadFile(file) {
             if (!currentSessionId) {
@@ -713,40 +843,131 @@
                 return false;
             }
 
+            // Show upload modal
+            showUploadProgress(file.name);
+
             const formData = new FormData();
             formData.append('file', file);
             formData.append('session_id', currentSessionId);
-            formData.append('expert_name', 'Expert User'); // You might want to get this from session
+            formData.append('expert_name', 'Expert User');
 
             try {
+                // Start with smooth progress animation
+                updateProgress(5, 'Preparing upload...');
+                
+                // Simulate realistic upload progress
+                setTimeout(() => updateProgress(15, 'Uploading file...'), 300);
+                setTimeout(() => updateProgress(25, 'Uploading file...'), 600);
+                setTimeout(() => updateProgress(35, 'Uploading file...'), 900);
+                
                 const response = await fetch('/upload-doc', {
                     method: 'POST',
                     body: formData
                 });
 
+                // Continue progress during processing
+                setTimeout(() => updateProgress(45, 'Processing document...'), 1200);
+                setTimeout(() => updateProgress(55, 'Extracting text...'), 1500);
+                setTimeout(() => updateProgress(65, 'Creating chunks...'), 1800);
+                setTimeout(() => updateProgress(75, 'Generating embeddings...'), 2100);
+                
                 const result = await response.json();
+                
+                setTimeout(() => updateProgress(85, 'Storing data...'), 2400);
+                setTimeout(() => updateProgress(95, 'Finalizing...'), 2700);
 
-                if (response.ok && result.success) {
-                    addMessage('system', `✅ ${result.message}`);
-                    removeFile();
-                    return true;
-                } else {
-                    addMessage('system', `❌ Upload failed: ${result.detail || 'Unknown error'}`);
-                    return false;
-                }
+                setTimeout(() => {
+                    if (response.ok && result.success) {
+                        updateProgress(100, 'Complete!');
+                        setTimeout(() => {
+                            hideUploadProgress();
+                            addDocumentMessage(result.filename, result.file_type, result.chunks_processed);
+                        }, 1000);
+                        return true;
+                    } else {
+                        hideUploadProgress();
+                        addMessage('system', `❌ Upload failed: ${result.detail || 'Unknown error'}`);
+                        return false;
+                    }
+                }, 1000);
+
             } catch (error) {
                 console.error('Upload error:', error);
+                hideUploadProgress();
                 addMessage('system', '❌ Upload failed: Network error');
                 return false;
             }
         }
 
+        function showUploadProgress(fileName) {
+            document.getElementById('uploadFileName').textContent = fileName;
+            document.getElementById('uploadModal').classList.add('show');
+            updateProgress(0, 'Initializing...');
+        }
+
+        function hideUploadProgress() {
+            document.getElementById('uploadModal').classList.remove('show');
+        }
+
+        function updateProgress(percent, text) {
+            document.getElementById('progressBar').style.width = percent + '%';
+            document.getElementById('progressText').textContent = text;
+        }
+
+        function addDocumentMessage(filename, fileType, chunksProcessed) {
+            const messagesContainer = document.getElementById('messages');
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message system-message';
+            
+            const messageContent = document.createElement('div');
+            messageContent.className = 'message-content';
+            
+            const documentAttachment = document.createElement('div');
+            documentAttachment.className = 'document-attachment';
+            
+            const icon = getFileIcon(fileType);
+            documentAttachment.innerHTML = `
+                <div class="document-icon">
+                    <i class="fas fa-${icon}"></i>
+                </div>
+                <div class="document-info">
+                    <div class="document-name">${filename}</div>
+                    <div class="document-type">${fileType} • ${chunksProcessed} sections</div>
+                </div>
+            `;
+            
+            const successText = document.createElement('p');
+            successText.textContent = `Document uploaded successfully!`;
+            successText.style.marginTop = '8px';
+            successText.style.color = '#059669';
+            successText.style.fontSize = '14px';
+            
+            messageContent.appendChild(documentAttachment);
+            messageContent.appendChild(successText);
+            messageDiv.appendChild(messageContent);
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function getFileIcon(fileType) {
+            switch(fileType.toLowerCase()) {
+                case 'pdf': return 'file-pdf';
+                case 'docx': return 'file-word';
+                case 'pptx': return 'file-powerpoint';
+                case 'txt': return 'file-alt';
+                default: return 'file';
+            }
+        }
+
         // File input event listener
-        document.getElementById('fileInput').addEventListener('change', function(e) {
+        document.getElementById('fileInput').addEventListener('change', async function(e) {
             const file = e.target.files[0];
             if (file) {
                 if (validateFileType(file)) {
-                    displayFilePreview(file);
+                    // Automatically upload the file when selected
+                    await uploadFile(file);
+                    e.target.value = ''; // Clear the input after upload
                 } else {
                     showFileError(file.name);
                     e.target.value = ''; // Clear the input
@@ -778,11 +999,7 @@
         async function sendMessage() {
             const message = messageInput.value.trim();
             
-            // Handle file upload if a file is selected
-            if (selectedFile) {
-                await uploadFile(selectedFile);
-                return;
-            }
+            // Files now upload immediately when selected, so no need to check here
             
             if (!message || !currentSessionId) return;
 

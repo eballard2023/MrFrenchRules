@@ -34,7 +34,7 @@ class DocumentProcessor:
     def __init__(self, openai_client: AsyncOpenAI):
         self.openai_client = openai_client
         self.chroma_client = get_chroma_client()
-        self.chunk_size = 500  # tokens per chunk
+        self.chunk_size = 200  # tokens per chunk - smaller for better retrieval
         self.chunk_overlap = 50  # overlap between chunks
         
     async def process_uploaded_file(self, file_path: str, filename: str, expert_name: str, session_id: str) -> Dict:
@@ -81,6 +81,10 @@ class DocumentProcessor:
                         metadata['page_number'] = chunk_data['page_number']
                     if chunk_data.get('slide_number'):
                         metadata['slide_number'] = chunk_data['slide_number']
+                    
+                    # Log chunk content for debugging
+                    logger.info(f"📦 CHUNK {i+1} content ({len(chunk_data['content'])} chars):")
+                    logger.info(f"📝 CHUNK: {chunk_data['content'][:300]}{'...' if len(chunk_data['content']) > 300 else ''}")
                     
                     # Store in ChromaDB (embedding is generated automatically)
                     success = self.chroma_client.add_document_chunk(
@@ -137,6 +141,10 @@ class DocumentProcessor:
                 for page_num, page in enumerate(pdf.pages, 1):
                     text = page.extract_text()
                     if text and text.strip():
+                        # Log extracted text for debugging
+                        logger.info(f"📄 PDF Page {page_num} extracted text ({len(text)} chars):")
+                        logger.info(f"📝 TEXT: {text[:500]}{'...' if len(text) > 500 else ''}")
+                        
                         # Split long pages into chunks
                         page_chunks = self._split_text_into_chunks(text)
                         for chunk_text in page_chunks:
@@ -155,6 +163,10 @@ class DocumentProcessor:
                     for page_num, page in enumerate(pdf_reader.pages, 1):
                         text = page.extract_text()
                         if text and text.strip():
+                            # Log extracted text for debugging
+                            logger.info(f"📄 PDF Page {page_num} extracted text ({len(text)} chars) [pypdf]:")
+                            logger.info(f"📝 TEXT: {text[:500]}{'...' if len(text) > 500 else ''}")
+                            
                             page_chunks = self._split_text_into_chunks(text)
                             for chunk_text in page_chunks:
                                 chunks.append({
@@ -194,6 +206,10 @@ class DocumentProcessor:
             # Join all text and split into chunks
             document_text = '\n\n'.join(full_text)
             if document_text.strip():
+                # Log extracted text for debugging
+                logger.info(f"📄 DOCX extracted text ({len(document_text)} chars):")
+                logger.info(f"📝 TEXT: {document_text[:500]}{'...' if len(document_text) > 500 else ''}")
+                
                 text_chunks = self._split_text_into_chunks(document_text)
                 for chunk_text in text_chunks:
                     chunks.append({
@@ -231,6 +247,10 @@ class DocumentProcessor:
                 # Combine slide content
                 if slide_text:
                     combined_text = '\n\n'.join(slide_text)
+                    # Log extracted text for debugging
+                    logger.info(f"📄 PPTX Slide {slide_num} extracted text ({len(combined_text)} chars):")
+                    logger.info(f"📝 TEXT: {combined_text[:500]}{'...' if len(combined_text) > 500 else ''}")
+                    
                     # Split slide content into chunks if it's too long
                     slide_chunks = self._split_text_into_chunks(combined_text)
                     for chunk_text in slide_chunks:
@@ -265,6 +285,10 @@ class DocumentProcessor:
                 raise ValueError("Could not decode text file with any common encoding")
             
             if text.strip():
+                # Log extracted text for debugging
+                logger.info(f"📄 TXT extracted text ({len(text)} chars):")
+                logger.info(f"📝 TEXT: {text[:500]}{'...' if len(text) > 500 else ''}")
+                
                 text_chunks = self._split_text_into_chunks(text)
                 for chunk_text in text_chunks:
                     chunks.append({
@@ -279,50 +303,69 @@ class DocumentProcessor:
         return chunks
     
     def _split_text_into_chunks(self, text: str) -> List[str]:
-        """Split text into smaller chunks for embedding"""
-        # Simple sentence-based splitting for now
-        # In production, you might want to use more sophisticated chunking
+        """Split text into smaller chunks for embedding with better logic"""
         
-        sentences = text.split('. ')
+        # First, try to split by double newlines (paragraphs/sections)
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+        
         chunks = []
         current_chunk = ""
         
-        for sentence in sentences:
+        for paragraph in paragraphs:
             # Rough token estimation (1 token ≈ 4 characters)
-            estimated_tokens = len(current_chunk + sentence) // 4
+            paragraph_tokens = len(paragraph) // 4
+            current_tokens = len(current_chunk) // 4
             
-            if estimated_tokens > self.chunk_size and current_chunk:
+            # If adding this paragraph would exceed our limit, save current and start new
+            if current_tokens + paragraph_tokens > self.chunk_size and current_chunk:
                 chunks.append(current_chunk.strip())
-                current_chunk = sentence + '. '
+                current_chunk = paragraph
             else:
-                current_chunk += sentence + '. '
+                if current_chunk:
+                    current_chunk += "\n\n" + paragraph
+                else:
+                    current_chunk = paragraph
         
         # Add the last chunk
         if current_chunk.strip():
             chunks.append(current_chunk.strip())
         
-        return chunks
+        # If no chunks were created (very long single paragraph), fall back to sentence splitting
+        if not chunks:
+            sentences = text.split('. ')
+            current_chunk = ""
+            
+            for sentence in sentences:
+                estimated_tokens = len(current_chunk + sentence) // 4
+                
+                if estimated_tokens > self.chunk_size and current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = sentence + '. '
+                else:
+                    current_chunk += sentence + '. '
+            
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+        
+        # Ensure we have at least one chunk and handle very large single chunks
+        if not chunks and text.strip():
+            # For very large text, split into smaller pieces
+            words = text.split()
+            current_chunk = ""
+            
+            for word in words:
+                test_chunk = current_chunk + " " + word if current_chunk else word
+                if len(test_chunk) // 4 > self.chunk_size and current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = word
+                else:
+                    current_chunk = test_chunk
+            
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+        
+        return chunks if chunks else [text.strip()]
     
-    async def search_similar_chunks(self, query: str, session_id: Optional[str] = None, limit: int = 5) -> List[Dict]:
-        """Search for similar document chunks using ChromaDB vector similarity"""
-        try:
-            if not self.chroma_client.connected:
-                logger.warning("ChromaDB not connected - cannot search")
-                return []
-            
-            # Use ChromaDB's search (it handles embedding generation automatically)
-            similar_chunks = self.chroma_client.search_similar_chunks(
-                query=query,
-                session_id=session_id or "all",
-                limit=limit
-            )
-            
-            logger.info(f"🔍 Found {len(similar_chunks)} similar chunks for query: {query[:50]}...")
-            return similar_chunks
-            
-        except Exception as e:
-            logger.error(f"Error searching similar chunks: {e}")
-            return []
 
     def get_session_documents(self, session_id: str) -> Dict[str, Any]:
         """Get document statistics for a session"""

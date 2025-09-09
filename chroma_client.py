@@ -77,6 +77,15 @@ class ChromaDocumentClient:
                 logger.warning("ChromaDB not connected - cannot add chunk")
                 return False
             
+            # Check if chunk already exists to avoid duplicates
+            try:
+                existing = self.collection.get(ids=[chunk_id])
+                if existing['ids']:
+                    logger.info(f"📄 Chunk {chunk_id} already exists in ChromaDB, skipping")
+                    return True
+            except Exception:
+                pass  # Continue if check fails
+            
             # Compute embedding using OpenAI and add with explicit embeddings
             embedding = self._embed_texts([content])[0]
             self.collection.add(
@@ -93,62 +102,6 @@ class ChromaDocumentClient:
             logger.error(f"❌ Failed to add chunk {chunk_id}: {e}")
             return False
 
-    def search_similar_chunks(
-        self,
-        query: str,
-        session_id: str,
-        limit: int = 5
-    ) -> List[Dict[str, Any]]:
-        """
-        Search for similar document chunks
-        
-        Args:
-            query: Search query text
-            session_id: Filter by session ID
-            limit: Maximum number of results
-        
-        Returns:
-            List of similar chunks with metadata and similarity scores
-        """
-        try:
-            if not self.connected:
-                logger.warning("ChromaDB not connected - cannot search")
-                return []
-            
-            # Compute query embedding and search with session filter
-            q_vecs = self._embed_texts([query])
-            results = self.collection.query(
-                query_embeddings=q_vecs,
-                n_results=limit,
-                where={"session_id": session_id}
-            )
-            
-            # Format results
-            chunks = []
-            if results['documents'] and results['documents'][0]:
-                for i, doc in enumerate(results['documents'][0]):
-                    metadata = results['metadatas'][0][i] if results['metadatas'] else {}
-                    distance = results['distances'][0][i] if results.get('distances') and results['distances'] and results['distances'][0] else None
-                    
-                    # Convert distance to similarity if present (lower distance = more similar)
-                    similarity = 1.0 - distance if distance is not None else None
-                    
-                    chunks.append({
-                        'content': doc,
-                        'similarity': similarity,
-                        'document_title': metadata.get('title', 'Unknown'),
-                        'page_number': metadata.get('page_number'),
-                        'slide_number': metadata.get('slide_number'),
-                        'chunk_index': metadata.get('chunk_index', 0),
-                        'session_id': metadata.get('session_id')
-                    })
-            
-            logger.info(f"🔍 Found {len(chunks)} similar chunks for session {session_id}")
-            return chunks
-            
-        except Exception as e:
-            logger.error(f"❌ Search failed for session {session_id}: {e}")
-            return []
 
     def get_document_stats(self, session_id: str) -> Dict[str, Any]:
         """

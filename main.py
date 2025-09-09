@@ -240,16 +240,8 @@ async def startup_event():
     
     # Vector store disabled; using Supabase only
     
-    # Attempt document schema setup; continue if it fails, but record status
-    try:
-        supabase_client.ensure_document_schema()
-        supabase_client.documents_ready = True
-        supabase_client.documents_error = None
-        logger.info("✅ Document schema verified")
-    except Exception as e:
-        supabase_client.documents_ready = False
-        supabase_client.documents_error = str(e)
-        logger.warning(f"⚠️ Document schema not ready: {e}")
+    # Document processing now handled entirely by ChromaDB
+    logger.info("📄 Document processing using ChromaDB only")
 
     # Initialize session counter from database to avoid conflicts
     if supabase_client.connected:
@@ -407,7 +399,7 @@ Mr. French ties together three distinct but connected conversation types. Collec
 - **CRITICAL**: On greeting ("hello", "hi"), reply with greeting and continue the interview dont give intro of mr french again and again tell him if he asks otherwise continue the interview
 - **NEVER** respond with "I'm here to help" or similar general assistant language
 - **RESPONSE STYLE**: Keep responses brief and neutral. Avoid praise or evaluative language (e.g., "great", "excellent", "love that", "that's exactly right"). After receiving an answer, give a short neutral acknowledgment (e.g., "Noted." or "Understood."). If the user asks a question at the end of their response (indicated by a question mark), acknowledge it briefly (e.g., "That dashboard concept could be valuable for families.") then proceed with the next interview question. Don't elaborate on their previous response unless they specifically ask for clarification.
-- **DOCUMENT AWARENESS**: ONLY reference documents if explicit document context is provided in this prompt. If no document context appears below, DO NOT make up or invent document content. Simply say you cannot access the document content and focus on the interview questions instead. When document context IS provided, reference it confidently with the document title.
+- **DOCUMENT AWARENESS**: When document context is provided below, reference it confidently and provide helpful summaries or insights based on the content. If asked about document contents, provide a clear summary rather than raw text. Always focus on the interview questions while incorporating relevant document insights when available.
 - **CRITICAL**: NEVER explain, analyze, judge, compliment, congratulate, or praise their previous answer. Just acknowledge briefly and ask the next question. If they ask a question, give a brief 1-sentence response then ask your next question. Keep total responses under 3 sentences.
 - **SCRIPT ADHERENCE**: While being responsive to their answers, ensure you cover the key areas from the interview script above. You can ask follow-up questions based on their responses, but make sure to eventually cover all the main topics: expertise/principles, outcomes/measurement, processes/methods, guardrails/boundaries, tone/style, handling variability, and knowledge depth.
 - **CRITICAL**: NEVER repeat questions that have already been asked in this session. Keep track of what has been covered and move to new topics. If a similar area needs exploration, ask from a different angle or focus on a different aspect.
@@ -614,7 +606,8 @@ async def chat_with_interviewer(chat_message: ChatMessage):
     doc_query_patterns = [
         "see my doc", "uploaded file", "check my pdf", "check my ppt", "check my doc",
         "my document", "the file i uploaded", "uploaded document", "can you see", 
-        "do you have", "check the document", "look at my", "review my doc"
+        "do you have", "check the document", "look at my", "review my doc",
+        "whats in", "what's in", "what is in", "in this doc", "in my doc", "contents of"
     ]
     
     is_doc_query = any(pattern in chat_message.message.lower() for pattern in doc_query_patterns)
@@ -630,7 +623,46 @@ async def chat_with_interviewer(chat_message: ChatMessage):
             if session_docs_info['documents']:
                 doc_titles = [doc['title'] for doc in session_docs_info['documents']]
                 print(f"✅ FOUND DOCUMENTS: {doc_titles}")
-                ai_message = f"Yes, I can see your uploaded document(s): {', '.join(doc_titles)}. I have access to their content and can reference them in our discussion. Would you like me to incorporate insights from these documents into the next question, or would you prefer to continue with the standard interview questions?"
+                
+                # Simple document retrieval - get all chunks for the session
+                try:
+                    from chroma_client import get_chroma_client
+                    chroma_client = get_chroma_client()
+                    
+                    # Get ALL chunks for the session
+                    print(f"🔍 DEBUG: Retrieving documents for session_id: {session_id}")
+                    all_chunks = chroma_client.collection.get(
+                        where={"session_id": session_id}
+                    )
+                    print(f"🔍 DEBUG: Found {len(all_chunks.get('documents', []))} chunks for session {session_id}")
+                    
+                    doc_content_preview = ""
+                    if all_chunks['documents']:
+                        print(f"🔍 Retrieved {len(all_chunks['documents'])} total chunks from documents")
+                        
+                        # Limit to first 8 chunks for performance (about 2000 tokens max)
+                        max_chunks_for_display = 8
+                        chunks_to_show = min(len(all_chunks['documents']), max_chunks_for_display)
+                        
+                        # Collect all document content and provide actual content
+                        all_content = []
+                        for i, doc_content in enumerate(all_chunks['documents']):
+                            all_content.append(doc_content)
+                        
+                        # Use actual document content instead of generic summary
+                        combined_content = " ".join(all_content)
+                        
+                        # Limit content to avoid overwhelming the response (first 2000 characters)
+                        content_preview = combined_content[:2000] + "..." if len(combined_content) > 2000 else combined_content
+                        
+                        ai_message = f"Here's what I found in your document '{', '.join(doc_titles)}':\n\n{content_preview}\n\nThis is the actual content from your document. What would you like to know about it?"
+                    else:
+                        ai_message = f"I can see your document '{', '.join(doc_titles)}' but couldn't retrieve its content. Would you like to try asking again or continue with the interview questions?"
+                    
+                except Exception as e:
+                    print(f"Error processing document query: {e}")
+                    ai_message = f"I can see your document '{', '.join(doc_titles)}' but had trouble accessing its content. Would you like to try asking again or continue with the interview questions?"
+                
                 conversation_history.append({"role": "assistant", "content": ai_message})
                 await supabase_client.update_session(session_id, conversation_history, session_data['current_question_index'], session_data['is_complete'])
                 return {
@@ -733,41 +765,77 @@ async def chat_with_interviewer(chat_message: ChatMessage):
         # Search for relevant document context using ChromaDB
         doc_context = ""
         try:
+            from chroma_client import get_chroma_client
             doc_processor = get_document_processor(client)
-            similar_chunks = await doc_processor.search_similar_chunks(
-                query=chat_message.message,
-                session_id=session_id,
-                limit=5
-            )
             
-            if similar_chunks:
-                doc_context_parts = []
-                print(f"🔍 SIMILARITY SCORES:")
-                for i, chunk in enumerate(similar_chunks):
-                    sim_score = chunk.get('similarity', 'None')
-                    print(f"  Chunk {i+1}: {sim_score:.3f} from {chunk.get('document_title', 'Unknown')}")
+            # First, debug ChromaDB storage
+            chroma_client = get_chroma_client()
+            collection_info = chroma_client.get_collection_info()
+            print(f"🔍 CHROMA DEBUG - Total chunks in DB: {collection_info.get('total_chunks', 0)}")
+            
+            # Check session documents
+            session_docs = doc_processor.get_session_documents(session_id)
+            print(f"🔍 SESSION DEBUG - Session {session_id} has {session_docs['total_chunks']} chunks, {len(session_docs['documents'])} documents")
+            
+            # Additional debug: show what documents are found
+            if session_docs['documents']:
+                for doc in session_docs['documents']:
+                    print(f"  📄 Found document: {doc.get('title', 'Unknown')} (type: {doc.get('doc_type', 'Unknown')})")
+            else:
+                print(f"  ❌ No documents found for session {session_id}")
+            
+            if session_docs['total_chunks'] > 0:
+                # Simple document context - get all chunks for the session
+                try:
+                    from chroma_client import get_chroma_client
+                    chroma_client = get_chroma_client()
                     
-                    # Lower threshold to 0.3 for better recall
-                    if chunk.get('similarity', 0) >= 0.3:
-                        source_info = f"From {chunk['document_title']}"
-                        if chunk.get('page_number'):
-                            source_info += f" (Page {chunk['page_number']})"
-                        elif chunk.get('slide_number'):
-                            source_info += f" (Slide {chunk['slide_number']})"
+                    print(f"🔍 DEBUG: Retrieving document context for session_id: {session_id}")
+                    all_chunks = chroma_client.collection.get(
+                        where={"session_id": session_id}
+                    )
+                    print(f"🔍 DEBUG: Found {len(all_chunks.get('documents', []))} chunks for context in session {session_id}")
+                    
+                    if all_chunks['documents']:
+                        doc_context_parts = []
+                        doc_titles = set()
                         
-                        doc_context_parts.append(f"{source_info}:\n{chunk['content']}")
+                        # Collect document titles and provide summary context
+                        doc_titles = set()
+                        for i, doc_content in enumerate(all_chunks['documents']):
+                            metadata = all_chunks['metadatas'][i] if all_chunks['metadatas'] else {}
+                            doc_title = metadata.get('title', 'Unknown Document')
+                            doc_titles.add(doc_title)
+                        
+                        if doc_titles:
+                            # Get actual document content for context
+                            doc_context_parts = []
+                            for i, doc_content in enumerate(all_chunks['documents'][:3]):  # First 3 chunks for context
+                                metadata = all_chunks['metadatas'][i] if all_chunks['metadatas'] else {}
+                                doc_title = metadata.get('title', 'Unknown Document')
+                                # Limit each chunk to 300 characters
+                                content_preview = doc_content[:300] + "..." if len(doc_content) > 300 else doc_content
+                                doc_context_parts.append(f"From {doc_title}: {content_preview}")
+                            
+                            doc_header = f"**UPLOADED DOCUMENTS:** {', '.join(doc_titles)}\n\n**DOCUMENT CONTEXT:**\n"
+                            doc_context = "\n\n" + doc_header + "\n\n".join(doc_context_parts)
+                            logger.info(f"📚 Added actual document context from {len(doc_titles)} documents")
+                            print(f"🔍 FOUND DOCS: Actual content context from {list(doc_titles)}")
+                        else:
+                            print(f"🔍 NO DOCS FOUND for session {session_id}")
+                    else:
+                        print(f"🔍 NO DOCUMENTS in session {session_id} - skipping document search")
+                        
+                except Exception as e:
+                    print(f"❌ DOCUMENT CONTEXT ERROR: {e}")
+                    pass
+            else:
+                print(f"🔍 NO DOCUMENTS in session {session_id} - skipping document search")
                 
-                if doc_context_parts:
-                    doc_titles = list(set(chunk['document_title'] for chunk in similar_chunks if chunk.get('similarity', 0) >= 0.3))
-                    doc_header = f"**UPLOADED DOCUMENTS:** {', '.join(doc_titles)}\n\n**DOCUMENT CONTEXT:**\n"
-                    doc_context = "\n\n" + doc_header + "\n\n---\n\n".join(doc_context_parts)
-                    logger.info(f"📚 Added document context: {len(doc_context_parts)} relevant chunks from {len(doc_titles)} documents")
-                    print(f"🔍 FOUND DOCS: {len(doc_context_parts)} chunks from {doc_titles}")
-                else:
-                    print(f"🔍 NO DOCS FOUND - all similarities below 0.3 threshold for query: '{chat_message.message[:50]}...' in session {session_id}")
         except Exception as e:
             # ChromaDB might not be available or connected - this is optional functionality
             logger.warning(f"⚠️ Document context search failed: {e}")
+            print(f"❌ DOCUMENT SEARCH ERROR: {e}")
             pass
         
         # Enhanced system prompt with document context
@@ -866,6 +934,71 @@ async def submit_interview(session_id: str):
                 "tasks": []
             }
         
+        # Get document summaries for this session if any exist
+        document_context = ""
+        try:
+            from chroma_client import get_chroma_client
+            from document_processor import get_document_processor
+            
+            doc_processor = get_document_processor(client)
+            session_docs = doc_processor.get_session_documents(session_id)
+            
+            if session_docs['total_chunks'] > 0:
+                print(f"📄 Including {session_docs['total_chunks']} document chunks in rule extraction")
+                
+                # Get all document chunks for this session
+                chroma_client = get_chroma_client()
+                all_chunks = chroma_client.collection.get(
+                    where={"session_id": session_id}
+                )
+                
+                if all_chunks['documents']:
+                    # Combine all document content
+                    doc_titles = []
+                    combined_content = ""
+                    
+                    # Sort chunks by index for proper order
+                    sorted_chunks = []
+                    for i, doc_content in enumerate(all_chunks['documents']):
+                        metadata = all_chunks['metadatas'][i] if all_chunks['metadatas'] else {}
+                        chunk_index = metadata.get('chunk_index', i)
+                        doc_title = metadata.get('title', 'Unknown')
+                        sorted_chunks.append((chunk_index, doc_content, doc_title))
+                        if doc_title not in doc_titles:
+                            doc_titles.append(doc_title)
+                    
+                    sorted_chunks.sort(key=lambda x: x[0])
+                    
+                    # Combine content from all chunks (limit for performance)
+                    chunk_count = 0
+                    for _, content, title in sorted_chunks:
+                        if chunk_count >= 20:  # Limit to first 20 chunks for performance
+                            combined_content += "\n[Additional content truncated for processing...]"
+                            break
+                        combined_content += f"{content}\n\n"
+                        chunk_count += 1
+                    
+                    # Create document context for rule extraction
+                    document_context = f"""
+
+**UPLOADED DOCUMENTS:**
+The expert also provided the following document(s): {', '.join(doc_titles)}
+
+**DOCUMENT CONTENT:**
+{combined_content.strip()}
+
+**DOCUMENT EXTRACTION GUIDANCE:**
+- Extract additional rules from the document content that are relevant to Mr. French's role
+- Look for specific strategies, techniques, or guidelines mentioned in the documents
+- Convert document advice into "Mr. French should..." format
+- Only extract rules that apply to child behavior, family communication, or task management
+- Combine insights from both the conversation AND the documents
+"""
+                    
+        except Exception as e:
+            print(f"⚠️ Could not include documents in rule extraction: {e}")
+            document_context = ""
+        
         # Extract behavioral rules for Mr. French
         extraction_prompt = f"""You are analyzing an interview with a behavioral expert to extract specific rules for Mr. French AI.
 
@@ -886,6 +1019,7 @@ Mr. French uses a zone system: Red (frustrated/stressed), Green (normal), Blue (
 - Focus on child behavior management, communication strategies, and family dynamics
 - Ignore meta-conversation about the interview itself
 - DO NOT generate rules from your own knowledge - only from what the expert explicitly stated
+- If documents are provided, also extract relevant rules from the document content
 
 **EXAMPLES:**
 - "Mr. French should use calm, reassuring language when a child is in the red zone"
@@ -894,6 +1028,7 @@ Mr. French uses a zone system: Red (frustrated/stressed), Green (normal), Blue (
 
 **CONVERSATION:**
 {conversation_text}
+{document_context}
 
 **EXTRACTED RULES:"""
         

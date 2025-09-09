@@ -378,6 +378,11 @@
             opacity: 0.7;
             pointer-events: none;
             position: relative;
+            min-width: 80px; /* Maintain consistent button width */
+        }
+
+        .btn.loading .btn-text {
+            opacity: 0; /* Hide text during loading */
         }
 
         .btn.loading::after {
@@ -699,10 +704,10 @@
                     ${task.status === 'pending' ? `
                         <div class="task-actions">
                             <button class="btn btn-approve" onclick="approveTask('${task.id}')">
-                                <i class="fas fa-check"></i> Approve
+                                <span class="btn-text"><i class="fas fa-check"></i> Approve</span>
                             </button>
                             <button class="btn btn-reject" onclick="rejectTask('${task.id}')">
-                                <i class="fas fa-times"></i> Reject
+                                <span class="btn-text"><i class="fas fa-times"></i> Reject</span>
                             </button>
                         </div>
                     ` : ''}
@@ -723,7 +728,6 @@
             
             try {
                 button.classList.add('loading');
-                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
                 
                 const token = localStorage.getItem('admin_token');
                 const response = await fetch(`/admin/approve/${taskId}`, {
@@ -747,7 +751,6 @@
                 showModal('Error', 'Error approving task. Please try again.');
             } finally {
                 button.classList.remove('loading');
-                button.innerHTML = '<i class="fas fa-check"></i> Approve';
             }
         }
 
@@ -759,7 +762,6 @@
             
             try {
                 button.classList.add('loading');
-                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
                 
                 const token = localStorage.getItem('admin_token');
                 const response = await fetch(`/admin/reject/${taskId}`, {
@@ -783,7 +785,6 @@
                 showModal('Error', 'Error rejecting task. Please try again.');
             } finally {
                 button.classList.remove('loading');
-                button.innerHTML = '<i class="fas fa-times"></i> Reject';
             }
         }
 

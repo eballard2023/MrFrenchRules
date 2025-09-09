@@ -23,10 +23,7 @@ jobs:
           script: |
             set -xe
             cd /home/ec2-user/MrFrenchRules
-
             git fetch origin
             git reset --hard origin/main
-
-            pip3 install -r requirements.txt
+            pip3 install -r requirements.txt   
             sudo systemctl restart mrfrench
-            sudo systemctl status mrfrench --no-pager -l

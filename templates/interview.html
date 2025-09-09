@@ -296,6 +296,79 @@
             background: transparent;
         }
 
+        .attach-button {
+            background: #6b7280;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 45px;
+            height: 45px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            margin-right: 10px;
+        }
+
+        .attach-button:hover:not(:disabled) {
+            background: #4b5563;
+            transform: translateY(-2px);
+        }
+
+        .attach-button:disabled {
+            background: #d1d5db;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .file-preview {
+            margin-top: 15px;
+            padding: 12px;
+            background: #f1f5f9;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .file-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .file-info i {
+            color: #3b82f6;
+            font-size: 16px;
+        }
+
+        .file-name {
+            flex: 1;
+            font-size: 14px;
+            color: #374151;
+            font-weight: 500;
+        }
+
+        .remove-file {
+            background: #ef4444;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            transition: all 0.2s ease;
+        }
+
+        .remove-file:hover {
+            background: #dc2626;
+            transform: scale(1.1);
+        }
+
         .send-button {
             background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
             color: white;
@@ -492,9 +565,22 @@
             <div class="input-area">
                 <div class="input-container">
                     <input type="text" class="message-input" id="messageInput" placeholder="Share your expertise here..." disabled>
+                    <input type="file" class="file-input" id="fileInput" accept=".pdf,.docx,.pptx,.txt" style="display: none;">
+                    <button class="attach-button" id="attachBtn" onclick="openFileDialog()" title="Attach document (PDF, DOCX, PPTX, TXT)">
+                        <i class="fas fa-paperclip"></i>
+                    </button>
                     <button class="send-button" id="sendBtn" onclick="sendMessage()" disabled>
                         <i class="fas fa-paper-plane"></i>
                     </button>
+                </div>
+                <div class="file-preview" id="filePreview" style="display: none;">
+                    <div class="file-info">
+                        <i class="fas fa-file-alt"></i>
+                        <span class="file-name" id="fileName"></span>
+                        <button class="remove-file" onclick="removeFile()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -504,10 +590,12 @@
         let currentSessionId = null;
         let questionNumber = 0;
         let isInterviewComplete = false;
+        let selectedFile = null;
 
         const messagesContainer = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
         const sendBtn = document.getElementById('sendBtn');
+        const attachBtn = document.getElementById('attachBtn');
         const submitBtn = document.getElementById('submitBtn');
         const status = document.getElementById('status');
         const loading = document.getElementById('loading');
@@ -522,6 +610,9 @@
             // Get session_id from URL parameters
             const urlParams = new URLSearchParams(window.location.search);
             const sessionId = urlParams.get('session_id');
+            
+            // Check document processing availability
+            checkDocumentProcessingAvailability();
             
             if (sessionId) {
                 // Session already exists, load the conversation
@@ -562,6 +653,7 @@
                     if (!data.is_complete) {
                         messageInput.disabled = false;
                         sendBtn.disabled = false;
+                        attachBtn.disabled = false;
                         submitBtn.disabled = false;
                     }
 
@@ -579,6 +671,7 @@
                 // Don't redirect immediately, try to continue with empty session
                 messageInput.disabled = false;
                 sendBtn.disabled = false;
+                attachBtn.disabled = false;
                 submitBtn.disabled = false;
                 addMessage('ai', 'Welcome! Let\'s begin the interview. Please share your thoughts.');
             } finally {
@@ -586,8 +679,111 @@
             }
         }
 
+        // File handling functions
+        function openFileDialog() {
+            document.getElementById('fileInput').click();
+        }
+
+        function validateFileType(file) {
+            const allowedTypes = ['.pdf', '.docx', '.pptx', '.txt'];
+            const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+            return allowedTypes.includes(fileExtension);
+        }
+
+        function showFileError(fileName) {
+            const errorMessage = `File "${fileName}" is not supported. Only PDF, DOCX, PPTX, and TXT files can be attached.`;
+            addMessage('system', errorMessage);
+        }
+
+        function removeFile() {
+            selectedFile = null;
+            document.getElementById('filePreview').style.display = 'none';
+            document.getElementById('fileInput').value = '';
+        }
+
+        function displayFilePreview(file) {
+            selectedFile = file;
+            document.getElementById('fileName').textContent = file.name;
+            document.getElementById('filePreview').style.display = 'block';
+        }
+
+        async function uploadFile(file) {
+            if (!currentSessionId) {
+                addMessage('system', 'Please start the interview before uploading documents.');
+                return false;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('session_id', currentSessionId);
+            formData.append('expert_name', 'Expert User'); // You might want to get this from session
+
+            try {
+                const response = await fetch('/upload-doc', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    addMessage('system', `✅ ${result.message}`);
+                    removeFile();
+                    return true;
+                } else {
+                    addMessage('system', `❌ Upload failed: ${result.detail || 'Unknown error'}`);
+                    return false;
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                addMessage('system', '❌ Upload failed: Network error');
+                return false;
+            }
+        }
+
+        // File input event listener
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                if (validateFileType(file)) {
+                    displayFilePreview(file);
+                } else {
+                    showFileError(file.name);
+                    e.target.value = ''; // Clear the input
+                }
+            }
+        });
+
+        // Check if document processing is available
+        async function checkDocumentProcessingAvailability() {
+            try {
+                // Make a simple test request to see if document processing is available
+                const response = await fetch('/upload-doc', {
+                    method: 'POST',
+                    body: new FormData() // Empty form data to trigger validation
+                });
+                
+                if (response.status === 503) {
+                    // Document processing not available, hide the attach button
+                    const attachBtn = document.getElementById('attachBtn');
+                    if (attachBtn) {
+                        attachBtn.style.display = 'none';
+                    }
+                }
+            } catch (error) {
+                // Silently handle errors - keep the button visible by default
+            }
+        }
+
         async function sendMessage() {
             const message = messageInput.value.trim();
+            
+            // Handle file upload if a file is selected
+            if (selectedFile) {
+                await uploadFile(selectedFile);
+                return;
+            }
+            
             if (!message || !currentSessionId) return;
 
             addMessage('user', message);
@@ -596,6 +792,7 @@
             try {
                 showLoading(true);
                 sendBtn.disabled = true;
+                attachBtn.disabled = true;
                 messageInput.disabled = true;
                 
                 const response = await fetch('/chat', {
@@ -622,16 +819,19 @@
                     } else {
                         messageInput.disabled = false;
                         sendBtn.disabled = false;
+                        attachBtn.disabled = false;
                     }
                 } else {
-                    addMessage('ai', `Error: ${data.detail}`);
-                    messageInput.disabled = false;
-                    sendBtn.disabled = false;
+                addMessage('ai', `Error: ${data.detail}`);
+                messageInput.disabled = false;
+                sendBtn.disabled = false;
+                attachBtn.disabled = false;
                 }
             } catch (error) {
                 addMessage('ai', `Error: ${error.message}`);
                 messageInput.disabled = false;
                 sendBtn.disabled = false;
+                attachBtn.disabled = false;
             } finally {
                 showLoading(false);
             }
@@ -691,6 +891,7 @@
             // Block all input
             messageInput.disabled = true;
             sendBtn.disabled = true;
+            attachBtn.disabled = true;
             submitBtn.disabled = true;
             
             // Update status

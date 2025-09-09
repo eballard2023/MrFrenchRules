@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -7,21 +7,17 @@ from pydantic import BaseModel
 import openai
 import os
 import json
+import tempfile
+import shutil
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from typing import List, Dict, Optional
 import asyncio
 # MongoDB removed - using Supabase + ChromaDB
 from supabase_client import supabase_client
-try:
-    from chromadb_client import chromadb_client
-    print("❌ ChromaDB disabled - using Supabase only")
-except (ImportError, AttributeError) as e:
-    chromadb_client = None
-    print(f"❌ ChromaDB not available: {e}")
-    print("Using Supabase only for conversation storage")
 from admin_auth import admin_auth
 from jira_client import jira_client
+from document_processor import get_document_processor
 import logging
 
 # Set up logging
@@ -242,9 +238,19 @@ async def startup_event():
         logger.warning(f"⚠️ Supabase connection error: {e}")
         logger.info("App will continue without Supabase - using fallback storage")
     
-    # ChromaDB disabled due to version issues
-    logger.info("ℹ️ ChromaDB disabled - using Supabase only")
+    # Vector store disabled; using Supabase only
     
+    # Attempt document schema setup; continue if it fails, but record status
+    try:
+        supabase_client.ensure_document_schema()
+        supabase_client.documents_ready = True
+        supabase_client.documents_error = None
+        logger.info("✅ Document schema verified")
+    except Exception as e:
+        supabase_client.documents_ready = False
+        supabase_client.documents_error = str(e)
+        logger.warning(f"⚠️ Document schema not ready: {e}")
+
     # Initialize session counter from database to avoid conflicts
     if supabase_client.connected:
         try:
@@ -401,6 +407,7 @@ Mr. French ties together three distinct but connected conversation types. Collec
 - **CRITICAL**: On greeting ("hello", "hi"), reply with greeting and continue the interview dont give intro of mr french again and again tell him if he asks otherwise continue the interview
 - **NEVER** respond with "I'm here to help" or similar general assistant language
 - **RESPONSE STYLE**: Keep responses brief and neutral. Avoid praise or evaluative language (e.g., "great", "excellent", "love that", "that's exactly right"). After receiving an answer, give a short neutral acknowledgment (e.g., "Noted." or "Understood."). If the user asks a question at the end of their response (indicated by a question mark), acknowledge it briefly (e.g., "That dashboard concept could be valuable for families.") then proceed with the next interview question. Don't elaborate on their previous response unless they specifically ask for clarification.
+- **DOCUMENT AWARENESS**: ONLY reference documents if explicit document context is provided in this prompt. If no document context appears below, DO NOT make up or invent document content. Simply say you cannot access the document content and focus on the interview questions instead. When document context IS provided, reference it confidently with the document title.
 - **CRITICAL**: NEVER explain, analyze, judge, compliment, congratulate, or praise their previous answer. Just acknowledge briefly and ask the next question. If they ask a question, give a brief 1-sentence response then ask your next question. Keep total responses under 3 sentences.
 - **SCRIPT ADHERENCE**: While being responsive to their answers, ensure you cover the key areas from the interview script above. You can ask follow-up questions based on their responses, but make sure to eventually cover all the main topics: expertise/principles, outcomes/measurement, processes/methods, guardrails/boundaries, tone/style, handling variability, and knowledge depth.
 - **CRITICAL**: NEVER repeat questions that have already been asked in this session. Keep track of what has been covered and move to new topics. If a similar area needs exploration, ask from a different angle or focus on a different aspect.
@@ -450,7 +457,7 @@ async def start_interview_with_expert(expert_info: ExpertInfo):
     
     await supabase_client.save_session(session_id, expert_info.expert_name, expert_info.expert_email, expert_info.expertise_area)
     
-    # ChromaDB disabled - using Supabase only
+    # Using Supabase only for session storage
     print(f"💾 Using Supabase only for session {session_id}")
     
     # Start with personalized greeting
@@ -479,6 +486,99 @@ async def start_interview_with_expert(expert_info: ExpertInfo):
 async def start_interview():
     """Legacy endpoint - redirect to expert info collection"""
     raise HTTPException(status_code=400, detail="Please provide expert information first")
+
+@app.post("/upload-doc")
+async def upload_document(
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
+    expert_name: str = Form(...)
+):
+    """Upload and process a document (PDF, DOCX, PPTX, TXT) for interview context"""
+    logger.info(f"📄 Document upload requested: {file.filename} for session {session_id}")
+    
+    # Check if ChromaDB document processing is available
+    try:
+        from chroma_client import get_chroma_client
+        chroma_client = get_chroma_client()
+        if not chroma_client.connected:
+            raise HTTPException(
+                status_code=503, 
+                detail="Document processing is not available. ChromaDB connection failed."
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Document processing is not available: {str(e)}"
+        )
+    
+    # Validate file type
+    allowed_extensions = {'.pdf', '.docx', '.pptx', '.txt'}
+    file_ext = os.path.splitext(file.filename.lower())[1]
+    
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}"
+        )
+    
+    # Validate file size (max 50MB)
+    max_file_size = 50 * 1024 * 1024  # 50MB
+    file_content = await file.read()
+    if len(file_content) > max_file_size:
+        raise HTTPException(status_code=400, detail="File too large. Maximum size: 50MB")
+    
+    # Reset file pointer
+    await file.seek(0)
+    
+    # Create temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
+        # Write uploaded content to temp file
+        shutil.copyfileobj(file.file, temp_file)
+        temp_file_path = temp_file.name
+    
+    try:
+        # Get document processor
+        doc_processor = get_document_processor(client)
+        
+        # Process the document
+        result = await doc_processor.process_uploaded_file(
+            file_path=temp_file_path,
+            filename=file.filename,
+            expert_name=expert_name,
+            session_id=session_id
+        )
+        
+        # Clean up temp file
+        os.unlink(temp_file_path)
+        
+        if result["success"]:
+            logger.info(f"✅ Document processed successfully: {file.filename}")
+            print(f"🎉 SUCCESS: {file.filename} - {result['chunks_processed']} chunks stored in ChromaDB")
+            return {
+                "success": True,
+                "message": f"Document '{file.filename}' has been processed and added to your interview context. I can now discuss its contents with you.",
+                "filename": result.get("filename", file.filename),
+                "chunks_processed": result["chunks_processed"],
+                "file_type": file_ext[1:].upper()
+            }
+        else:
+            logger.error(f"❌ Document processing failed: {result.get('error', 'Unknown error')}")
+            raise HTTPException(status_code=500, detail=result.get('error', 'Document processing failed'))
+            
+    except Exception as e:
+        # Clean up temp file on error
+        if os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
+        logger.error(f"❌ Error processing document upload: {e}")
+        
+        # Handle missing database tables gracefully
+        if "does not exist" in str(e):
+            raise HTTPException(
+                status_code=503, 
+                detail="Document processing tables not found. Please contact administrator to set up document processing."
+            )
+        else:
+            raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
 @app.post("/chat")
 async def chat_with_interviewer(chat_message: ChatMessage):
@@ -509,6 +609,60 @@ async def chat_with_interviewer(chat_message: ChatMessage):
     print(f"💾 User message stored in Supabase for session {session_id}")
     
     logger.info(f"💬 Session {session_id} - User message added. Total messages: {len(conversation_history)}")
+
+    # Check for document-related queries first
+    doc_query_patterns = [
+        "see my doc", "uploaded file", "check my pdf", "check my ppt", "check my doc",
+        "my document", "the file i uploaded", "uploaded document", "can you see", 
+        "do you have", "check the document", "look at my", "review my doc"
+    ]
+    
+    is_doc_query = any(pattern in chat_message.message.lower() for pattern in doc_query_patterns)
+    
+    if is_doc_query:
+        print(f"🔍 DOC QUERY DETECTED: '{chat_message.message}' in session {session_id}")
+        # Get session documents from ChromaDB
+        try:
+            doc_processor = get_document_processor(client)
+            session_docs_info = doc_processor.get_session_documents(session_id)
+            print(f"📄 SESSION DOCS: {session_docs_info}")
+            
+            if session_docs_info['documents']:
+                doc_titles = [doc['title'] for doc in session_docs_info['documents']]
+                print(f"✅ FOUND DOCUMENTS: {doc_titles}")
+                ai_message = f"Yes, I can see your uploaded document(s): {', '.join(doc_titles)}. I have access to their content and can reference them in our discussion. Would you like me to incorporate insights from these documents into the next question, or would you prefer to continue with the standard interview questions?"
+                conversation_history.append({"role": "assistant", "content": ai_message})
+                await supabase_client.update_session(session_id, conversation_history, session_data['current_question_index'], session_data['is_complete'])
+                return {
+                    "message": ai_message,
+                    "question_number": session_data['current_question_index'] + 1,
+                    "is_complete": False,
+                    "auto_submitted": False,
+                    "final_note": None
+                }
+            else:
+                ai_message = "I don't see any uploaded documents for this session yet. You can upload PDF, DOCX, PPTX, or TXT files using the attachment button, and I'll be able to reference their content in our discussion."
+                conversation_history.append({"role": "assistant", "content": ai_message})
+                await supabase_client.update_session(session_id, conversation_history, session_data['current_question_index'], session_data['is_complete'])
+                return {
+                    "message": ai_message,
+                    "question_number": session_data['current_question_index'] + 1,
+                    "is_complete": False,
+                    "auto_submitted": False,
+                    "final_note": None
+                }
+        except Exception as e:
+            logger.error(f"Error checking documents: {e}")
+            ai_message = "I'm having trouble accessing document information right now, but I can still help with the interview. Would you like to continue with the questions?"
+            conversation_history.append({"role": "assistant", "content": ai_message})
+            await supabase_client.update_session(session_id, conversation_history, session_data['current_question_index'], session_data['is_complete'])
+            return {
+                "message": ai_message,
+                "question_number": session_data['current_question_index'] + 1,
+                "is_complete": False,
+                "auto_submitted": False,
+                "final_note": None
+            }
 
     # Guard: handle small-talk or project Qs without advancing the question index
     msg_type = is_smalltalk_or_project(chat_message.message)
@@ -576,8 +730,56 @@ async def chat_with_interviewer(chat_message: ChatMessage):
             questions_context = "\n\nPREVIOUSLY ASKED QUESTIONS (DO NOT REPEAT):\n" + "\n".join([f"- {q}" for q in previous_questions[-5:]])  # Last 5 questions
             enhanced_system_prompt += questions_context
         
+        # Search for relevant document context using ChromaDB
+        doc_context = ""
+        try:
+            doc_processor = get_document_processor(client)
+            similar_chunks = await doc_processor.search_similar_chunks(
+                query=chat_message.message,
+                session_id=session_id,
+                limit=5
+            )
+            
+            if similar_chunks:
+                doc_context_parts = []
+                print(f"🔍 SIMILARITY SCORES:")
+                for i, chunk in enumerate(similar_chunks):
+                    sim_score = chunk.get('similarity', 'None')
+                    print(f"  Chunk {i+1}: {sim_score:.3f} from {chunk.get('document_title', 'Unknown')}")
+                    
+                    # Lower threshold to 0.3 for better recall
+                    if chunk.get('similarity', 0) >= 0.3:
+                        source_info = f"From {chunk['document_title']}"
+                        if chunk.get('page_number'):
+                            source_info += f" (Page {chunk['page_number']})"
+                        elif chunk.get('slide_number'):
+                            source_info += f" (Slide {chunk['slide_number']})"
+                        
+                        doc_context_parts.append(f"{source_info}:\n{chunk['content']}")
+                
+                if doc_context_parts:
+                    doc_titles = list(set(chunk['document_title'] for chunk in similar_chunks if chunk.get('similarity', 0) >= 0.3))
+                    doc_header = f"**UPLOADED DOCUMENTS:** {', '.join(doc_titles)}\n\n**DOCUMENT CONTEXT:**\n"
+                    doc_context = "\n\n" + doc_header + "\n\n---\n\n".join(doc_context_parts)
+                    logger.info(f"📚 Added document context: {len(doc_context_parts)} relevant chunks from {len(doc_titles)} documents")
+                    print(f"🔍 FOUND DOCS: {len(doc_context_parts)} chunks from {doc_titles}")
+                else:
+                    print(f"🔍 NO DOCS FOUND - all similarities below 0.3 threshold for query: '{chat_message.message[:50]}...' in session {session_id}")
+        except Exception as e:
+            # ChromaDB might not be available or connected - this is optional functionality
+            logger.warning(f"⚠️ Document context search failed: {e}")
+            pass
+        
+        # Enhanced system prompt with document context
+        final_system_prompt = enhanced_system_prompt
+        if doc_context:
+            final_system_prompt += f"\n\n{doc_context}\n\nYou can reference and discuss this document content naturally during the interview. If the expert asks about the document or mentions something related to it, feel free to engage with that context."
+            print(f"📋 DOCUMENT CONTEXT ADDED TO PROMPT: {len(doc_context)} characters")
+        else:
+            print("📋 NO DOCUMENT CONTEXT - AI should not reference any documents")
+        
         # Get AI's next question/response
-        messages = [{"role": "system", "content": enhanced_system_prompt}] + conversation_history
+        messages = [{"role": "system", "content": final_system_prompt}] + conversation_history
         
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",  # Faster for question generation
@@ -823,23 +1025,48 @@ async def get_database_status():
     try:
         logger.info(f"Checking database status - supabase connected: {supabase_client.connected if supabase_client else False}")
         
+        # Check ChromaDB status
+        documents_ready = True
+        documents_error = None
+        
+        try:
+            from chroma_client import get_chroma_client
+            chroma_client = get_chroma_client()
+            chroma_info = chroma_client.get_collection_info()
+            
+            if not chroma_info.get("connected", False):
+                documents_ready = False
+                documents_error = chroma_info.get("error", "ChromaDB not connected")
+        except Exception as e:
+            documents_ready = False
+            documents_error = f"ChromaDB error: {str(e)}"
+        
         if supabase_client and supabase_client.connected:
             return {
                 "connected": True,
                 "database_type": "Supabase PostgreSQL",
-                "message": "Database connection is healthy"
+                "message": "Database connection is healthy",
+                "documents_ready": documents_ready,
+                "documents_error": documents_error,
+                "document_engine": "ChromaDB"
             }
         else:
             return {
                 "connected": False,
-                "message": "Database not connected - check startup logs"
+                "message": "Database not connected - check startup logs",
+                "documents_ready": False,
+                "documents_error": "Main database not connected",
+                "document_engine": "ChromaDB"
             }
     except Exception as e:
         logger.error(f"Database status check failed: {e}")
         return {
             "connected": False,
             "error": str(e),
-            "message": "Database connection failed"
+            "message": "Database connection failed",
+            "documents_ready": False,
+            "documents_error": str(e),
+            "document_engine": "ChromaDB"
         }
 
 @app.get("/database/rules")
@@ -1206,14 +1433,18 @@ async def get_admin_stats(current_admin = Depends(get_current_admin)):
         if not supabase_client.connected:
             return {"total_interviews": 0, "pending_tasks": 0, "approved_tasks": 0, "rejected_tasks": 0}
         
+        # Get all sessions (interviews) - this is the correct count
+        all_sessions = await supabase_client.get_all_sessions()
+        total_interviews = len(all_sessions)
+        
+        # Get task statistics from rules
         db_rules = await supabase_client.get_all_rules()
         total_rules = len(db_rules)
         approved_tasks = sum(1 for r in db_rules if r.get('completed', False))
         pending_tasks = total_rules - approved_tasks
-        unique_sessions = len(set(r['session_id'] for r in db_rules))
         
         return {
-            "total_interviews": unique_sessions,
+            "total_interviews": total_interviews,
             "pending_tasks": pending_tasks,
             "approved_tasks": approved_tasks,
             "rejected_tasks": total_rules

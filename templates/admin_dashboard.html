@@ -432,7 +432,7 @@
                 <div class="number" id="pendingTasks">-</div>
             </div>
             <div class="stat-card">
-                <h3>Approved Rules</h3>
+                <h3>Completed Rules</h3>
                 <div class="number" id="approvedTasks">-</div>
             </div>
             <div class="stat-card">
@@ -723,7 +723,7 @@
             
             try {
                 button.classList.add('loading');
-                button.textContent = '';
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
                 
                 const token = localStorage.getItem('admin_token');
                 const response = await fetch(`/admin/approve/${taskId}`, {
@@ -735,15 +735,15 @@
                 });
                 
                 const result = await response.json();
-                if (result.success) {
+                
+                if (response.ok && result.success) {
                     showModal('Task Approved', result.message || `Task approved and sent to Jira! Issue key: ${result.jira_key}`);
                     await loadTasks();
                     await loadStats();
                 } else {
-                    showModal('Error', 'Failed to approve task: ' + result.error);
+                    showModal('Error', 'Failed to approve task: ' + (result.error || result.detail || 'Unknown error'));
                 }
             } catch (error) {
-                console.error('Error approving task:', error);
                 showModal('Error', 'Error approving task. Please try again.');
             } finally {
                 button.classList.remove('loading');
@@ -759,7 +759,7 @@
             
             try {
                 button.classList.add('loading');
-                button.textContent = '';
+                button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
                 
                 const token = localStorage.getItem('admin_token');
                 const response = await fetch(`/admin/reject/${taskId}`, {
@@ -771,15 +771,15 @@
                 });
                 
                 const result = await response.json();
-                if (result.success) {
+                
+                if (response.ok && result.success) {
                     showModal('Task Rejected', result.message || 'Task rejected successfully!');
                     await loadTasks();
                     await loadStats();
                 } else {
-                    showModal('Error', 'Failed to reject task: ' + result.error);
+                    showModal('Error', 'Failed to reject task: ' + (result.error || result.detail || 'Unknown error'));
                 }
             } catch (error) {
-                console.error('Error rejecting task:', error);
                 showModal('Error', 'Error rejecting task. Please try again.');
             } finally {
                 button.classList.remove('loading');

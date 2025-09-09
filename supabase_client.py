@@ -2,7 +2,8 @@ import psycopg2
 import psycopg2.extensions
 import os
 import socket
-from typing import List, Dict, Optional
+import json
+from typing import List, Dict, Optional, Tuple
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -32,6 +33,9 @@ print(f"DB_PORT: {DB_PORT}")
 class SupabaseClient:
     def __init__(self):
         self.connection = None
+        self.connected = False
+        self.documents_ready = False
+        self.documents_error = None
     
     def connect(self):
         """Establishes a connection to the PostgreSQL database."""
@@ -48,6 +52,16 @@ class SupabaseClient:
             
             # Create admin_users table if it doesn't exist
             self._create_admin_table()
+
+            # Ensure document schema exists (idempotent). Try first; don't fail startup.
+            try:
+                self.ensure_document_schema()
+                self.documents_ready = True
+                self.documents_error = None
+            except Exception as e:
+                self.documents_ready = False
+                self.documents_error = str(e)
+                print(f"⚠️ Document schema not ready: {e}")
             
             return True
         except Exception as e:
@@ -571,11 +585,301 @@ class SupabaseClient:
             print(f"❌ DB AUTH ERROR: {e}")
             return None
     
+    # Document Management Methods
+    async def create_document(self, expert_name: str, session_id: str, title: str, 
+                            file_path: str, doc_type: str, file_size_bytes: int) -> int:
+        """Create a new document record and return its ID"""
+        try:
+            with self.connection.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO documents (expert_name, session_id, title, file_path, doc_type, file_size_bytes)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (expert_name, session_id, title, file_path, doc_type, file_size_bytes))
+                
+                doc_id = cur.fetchone()[0]
+                self.connection.commit()
+                return doc_id
+        except Exception as e:
+            print(f"❌ Error creating document: {e}")
+            self.connection.rollback()
+            raise
+    
+    async def update_document_status(self, doc_id: int, status: str):
+        """Update document processing status"""
+        try:
+            with self.connection.cursor() as cur:
+                cur.execute("""
+                    UPDATE documents SET upload_status = %s, updated_at = NOW()
+                    WHERE id = %s
+                """, (status, doc_id))
+                self.connection.commit()
+        except Exception as e:
+            print(f"❌ Error updating document status: {e}")
+            self.connection.rollback()
+            raise
+    
+    async def update_document_page_count(self, doc_id: int, page_count: int):
+        """Update document page count"""
+        try:
+            with self.connection.cursor() as cur:
+                cur.execute("""
+                    UPDATE documents SET page_count = %s, updated_at = NOW()
+                    WHERE id = %s
+                """, (page_count, doc_id))
+                self.connection.commit()
+        except Exception as e:
+            print(f"❌ Error updating document page count: {e}")
+            self.connection.rollback()
+            raise
+    
+    async def create_doc_chunk(self, doc_id: int, chunk_index: int, content: str, 
+                             content_length: int, page_number: Optional[int] = None, 
+                             slide_number: Optional[int] = None, embedding: List[float] = None) -> int:
+        """Create a document chunk with embedding"""
+        try:
+            with self.connection.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO doc_chunks (doc_id, chunk_index, content, content_length, 
+                                          page_number, slide_number, embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (doc_id, chunk_index, content, content_length, page_number, slide_number, embedding))
+                
+                chunk_id = cur.fetchone()[0]
+                self.connection.commit()
+                return chunk_id
+        except Exception as e:
+            print(f"❌ Error creating document chunk: {e}")
+            self.connection.rollback()
+            raise
+    
+    async def search_similar_chunks(self, query_embedding: List[float], 
+                                  session_id: Optional[str] = None, limit: int = 5) -> List[Dict]:
+        """Search for similar document chunks using vector similarity"""
+        try:
+            with self.connection.cursor() as cur:
+                if session_id:
+                    # Search within specific session's documents
+                    cur.execute("""
+                        SELECT dc.id, dc.content, dc.page_number, dc.slide_number,
+                               d.title, d.doc_type, d.session_id,
+                               1 - (dc.embedding <=> %s::vector) AS similarity
+                        FROM doc_chunks dc
+                        JOIN documents d ON dc.doc_id = d.id
+                        WHERE d.session_id = %s AND d.upload_status = 'completed'
+                        ORDER BY dc.embedding <=> %s::vector
+                        LIMIT %s
+                    """, (query_embedding, session_id, query_embedding, limit))
+                else:
+                    # Search across all documents
+                    cur.execute("""
+                        SELECT dc.id, dc.content, dc.page_number, dc.slide_number,
+                               d.title, d.doc_type, d.session_id,
+                               1 - (dc.embedding <=> %s::vector) AS similarity
+                        FROM doc_chunks dc
+                        JOIN documents d ON dc.doc_id = d.id
+                        WHERE d.upload_status = 'completed'
+                        ORDER BY dc.embedding <=> %s::vector
+                        LIMIT %s
+                    """, (query_embedding, query_embedding, limit))
+                
+                results = cur.fetchall()
+                
+                chunks = []
+                for row in results:
+                    chunks.append({
+                        'id': row[0],
+                        'content': row[1],
+                        'page_number': row[2],
+                        'slide_number': row[3],
+                        'document_title': row[4],
+                        'doc_type': row[5],
+                        'session_id': row[6],
+                        'similarity': float(row[7])
+                    })
+                
+                return chunks
+        except Exception as e:
+            print(f"❌ Error searching similar chunks: {e}")
+            return []
+    
+    async def get_documents_by_session(self, session_id: str) -> List[Dict]:
+        """Get all documents for a session"""
+        try:
+            with self.connection.cursor() as cur:
+                cur.execute("""
+                    SELECT id, title, doc_type, file_size_bytes, page_count, 
+                           upload_status, created_at
+                    FROM documents
+                    WHERE session_id = %s
+                    ORDER BY created_at DESC
+                """, (session_id,))
+                
+                results = cur.fetchall()
+                
+                documents = []
+                for row in results:
+                    documents.append({
+                        'id': row[0],
+                        'title': row[1],
+                        'doc_type': row[2],
+                        'file_size_bytes': row[3],
+                        'page_count': row[4],
+                        'upload_status': row[5],
+                        'created_at': row[6].isoformat() if row[6] else None
+                    })
+                
+                return documents
+        except Exception as e:
+            print(f"❌ Error getting documents: {e}")
+            return []
+    
+    async def get_all_documents(self) -> List[Dict]:
+        """Get all documents for admin panel"""
+        try:
+            with self.connection.cursor() as cur:
+                cur.execute("""
+                    SELECT d.id, d.title, d.doc_type, d.expert_name, d.session_id,
+                           d.file_size_bytes, d.page_count, d.upload_status, d.created_at,
+                           COUNT(dc.id) as chunk_count
+                    FROM documents d
+                    LEFT JOIN doc_chunks dc ON d.id = dc.doc_id
+                    GROUP BY d.id, d.title, d.doc_type, d.expert_name, d.session_id,
+                             d.file_size_bytes, d.page_count, d.upload_status, d.created_at
+                    ORDER BY d.created_at DESC
+                """)
+                
+                results = cur.fetchall()
+                
+                documents = []
+                for row in results:
+                    documents.append({
+                        'id': row[0],
+                        'title': row[1],
+                        'doc_type': row[2],
+                        'expert_name': row[3],
+                        'session_id': row[4],
+                        'file_size_bytes': row[5],
+                        'page_count': row[6],
+                        'upload_status': row[7],
+                        'created_at': row[8].isoformat() if row[8] else None,
+                        'chunk_count': row[9]
+                    })
+                
+                return documents
+        except Exception as e:
+            print(f"❌ Error getting all documents: {e}")
+            return []
+    
     def close(self):
         """Close the database connection."""
         if self.connection:
             self.connection.close()
             print("🔌 Database connection closed.")
+
+    # -------------------- Optional Document Schema --------------------
+    def ensure_document_schema(self):
+        """Create pgvector extension and document tables if they do not exist."""
+        if not self.connection or self.connection.closed:
+            self.connect()
+        if not self.connection:
+            raise RuntimeError("No database connection")
+
+        try:
+            with self.connection.cursor() as cur:
+                # Enable pgvector extension
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+
+                # Documents table
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS documents (
+                        id SERIAL PRIMARY KEY,
+                        expert_name VARCHAR(255) NOT NULL,
+                        session_id VARCHAR(100),
+                        title VARCHAR(500) NOT NULL,
+                        file_url TEXT,
+                        file_path TEXT,
+                        doc_type VARCHAR(50) NOT NULL,
+                        file_size_bytes INTEGER,
+                        page_count INTEGER,
+                        upload_status VARCHAR(50) DEFAULT 'processing',
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                    """
+                )
+
+                # Doc chunks table (1536 dims for text-embedding-3-small/ada-002)
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS doc_chunks (
+                        id SERIAL PRIMARY KEY,
+                        doc_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+                        chunk_index INTEGER NOT NULL,
+                        content TEXT NOT NULL,
+                        content_length INTEGER NOT NULL,
+                        page_number INTEGER,
+                        slide_number INTEGER,
+                        embedding vector(1536),
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                    """
+                )
+
+                # Indexes
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_session_id ON documents(session_id);")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_expert_name ON documents(expert_name);")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_doc_chunks_doc_id ON doc_chunks(doc_id);")
+                # Create ANN index (ivfflat supports <= 2000 dims)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_doc_chunks_embedding ON doc_chunks USING ivfflat (embedding vector_cosine_ops);")
+
+                # Force correct embedding dimension - drop and recreate if needed
+                try:
+                    # Check current dimension
+                    cur.execute("""
+                        SELECT atttypmod 
+                        FROM pg_attribute a
+                        JOIN pg_class c ON a.attrelid = c.oid 
+                        WHERE c.relname = 'doc_chunks' AND a.attname = 'embedding'
+                    """)
+                    result = cur.fetchone()
+                    
+                    if result and result[0] != 1536:
+                        print(f"⚠️ doc_chunks has wrong embedding dimension ({result[0]}), recreating with 1536...")
+                        # Clean up related documents that will lose their chunks
+                        cur.execute("DELETE FROM documents WHERE upload_status = 'completed';")
+                        # Drop table and recreate with correct dimensions
+                        cur.execute("DROP TABLE IF EXISTS doc_chunks CASCADE;")
+                        cur.execute(
+                            """
+                            CREATE TABLE doc_chunks (
+                                id SERIAL PRIMARY KEY,
+                                doc_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+                                chunk_index INTEGER NOT NULL,
+                                content TEXT NOT NULL,
+                                content_length INTEGER NOT NULL,
+                                page_number INTEGER,
+                                slide_number INTEGER,
+                                embedding vector(1536),
+                                created_at TIMESTAMPTZ DEFAULT NOW()
+                            );
+                            """
+                        )
+                        cur.execute("CREATE INDEX IF NOT EXISTS idx_doc_chunks_doc_id ON doc_chunks(doc_id);")
+                        cur.execute("CREATE INDEX IF NOT EXISTS idx_doc_chunks_embedding ON doc_chunks USING ivfflat (embedding vector_cosine_ops);")
+                        print("✅ doc_chunks recreated with vector(1536)")
+                except Exception as e:
+                    print(f"⚠️ Could not verify/fix embedding dimension: {e}")
+
+                self.connection.commit()
+                print("✅ Document schema ensured (documents, doc_chunks)")
+        except Exception as e:
+            if self.connection:
+                self.connection.rollback()
+            # Fail fast: document feature is mandatory
+            raise RuntimeError(f"Document schema setup failed: {e}")
 
 # Global Supabase client instance
 supabase_client = SupabaseClient()

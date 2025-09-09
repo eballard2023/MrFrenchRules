@@ -21,7 +21,12 @@ jobs:
           username: ${{ vars.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -xe
             cd /home/ec2-user/MrFrenchRules
+
             git fetch origin
             git reset --hard origin/main
+
+            pip3 install -r requirements.txt
             sudo systemctl restart mrfrench
+            sudo systemctl status mrfrench --no-pager -l

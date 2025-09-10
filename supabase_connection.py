@@ -1,5 +1,23 @@
 import psycopg2
 from psycopg2 import sql
+import os
+from dotenv import load_dotenv
+
+
+# --- Environment Configuration ---
+load_dotenv()
+
+def _get_env(name, required=True, default=None):
+    value = os.getenv(name, default)
+    if required and (value is None or value == ""):
+        raise RuntimeError(f"Environment variable '{name}' is required but not set.")
+    return value
+
+DB_HOST = _get_env("DB_HOST")
+DB_NAME = _get_env("DB_NAME")
+DB_USER = _get_env("DB_USER")
+DB_PASSWORD = _get_env("DB_PASSWORD")
+DB_PORT = int(_get_env("DB_PORT", required=False, default="5432"))
 
 
 # --- Database Connection and Operations ---

@@ -33,24 +33,32 @@ is_prod = os.getenv("ENV", "development") == "production"
 app = FastAPI(
     title="AI Coach Interview Model",
     version="1.0.0",
-    docs_url=None if is_prod else "/docs",
-    redoc_url=None if is_prod else "/redoc",
-    openapi_url=None if is_prod else "/openapi.json",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
-# In production, provide friendly redirects for disabled docs endpoints
-if is_prod:
-    @app.get("/docs", include_in_schema=False)
-    async def _docs_redirect():
-        return RedirectResponse(url="/")
+# Always provide friendly redirects for disabled docs endpoints
+@app.get("/docs", include_in_schema=False)
+async def _docs_redirect():
+    return RedirectResponse(url="/")
 
-    @app.get("/redoc", include_in_schema=False)
-    async def _redoc_redirect():
-        return RedirectResponse(url="/")
+@app.get("/redoc", include_in_schema=False)
+async def _redoc_redirect():
+    return RedirectResponse(url="/")
 
-    @app.get("/openapi.json", include_in_schema=False)
-    async def _openapi_blocked():
-        return JSONResponse(status_code=404, content={"detail": "OpenAPI schema is disabled in production"})
+@app.get("/openapi.json", include_in_schema=False)
+async def _openapi_blocked():
+    return JSONResponse(status_code=404, content={"detail": "OpenAPI schema is disabled"})
+
+# Redirect nested paths ending with /docs or /redoc back to home (e.g., /admin/dashboard/docs)
+@app.get("/{_prefix:path}/docs", include_in_schema=False)
+async def _nested_docs_redirect(_prefix: str):
+    return RedirectResponse(url="/")
+
+@app.get("/{_prefix:path}/redoc", include_in_schema=False)
+async def _nested_redoc_redirect(_prefix: str):
+    return RedirectResponse(url="/")
 
 # Set up OpenAI client
 from openai import AsyncOpenAI

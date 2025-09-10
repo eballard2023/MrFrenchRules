@@ -32,7 +32,7 @@ class AdminAuth:
         """Authenticate admin user against database"""
         # Avoid logging sensitive data in production
         if os.getenv("ENV", "development") != "production":
-        print(f"🔐 AUTH: Attempting login for {email}")
+            print(f"🔐 AUTH: Attempting login for {email}")
         
         # Use database authentication
         user_data = supabase_client.authenticate_admin(email, password)
@@ -40,16 +40,16 @@ class AdminAuth:
         if user_data:
             # Generate JWT token
             token = self._generate_token(user_data["email"], user_data["name"])
-            if os.getenv("ENV", "development") != "production":
-            print(f"✅ AUTH: Generated token for {email}")
-            return {
+            if os.getenv("ENV", "production") == "production":
+                print(f"✅ AUTH: Generated token for {email}")
+                return {
                 "token": token,
                 "user": user_data
-            }
+                }
         
-        if os.getenv("ENV", "development") != "production":
-        print(f"❌ AUTH: Failed for {email}")
-        return None
+            if os.getenv("ENV", "production") == "production":
+                print(f"❌ AUTH: Failed for {email}")
+                return None
     
     def _generate_token(self, email: str, name: str) -> str:
         """Generate JWT token"""

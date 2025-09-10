@@ -186,7 +186,7 @@ def clean_response(text: str) -> str:
         # Remove leading punctuation marks that shouldn't be there
         cleaned = re.sub(r"^[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>\/\s]+", "", content)
         # Remove quotes around the entire text (straight or smart quotes)
-        cleaned = re.sub(r'^["“”\'](.+)["“”\']$', r"\1", cleaned)
+        cleaned = re.sub(r'^[""“”\'](.+)[""“”\']$', r"\1", cleaned)
         return cleaned.strip() if cleaned else text
     except Exception:
         return text
@@ -341,9 +341,9 @@ Mr. French ties together three distinct but connected conversation types. Collec
 **YOUR ROLE:**
 - You are an INTERVIEWER, not a general assistant
 - If the user greets (e.g., "how are you?"), reply briefly and warmly, then pivot to the interview
-- If asked "who are you?", reply: you are an AI interviewer to extract expert rules for Mr. French, then ask if they’re ready to continue
-- If asked about the Mr. French project or Timmy, answer concisely from context, then ask if they’re ready to continue
-- For unrelated general-knowledge/trivia (e.g., celebrities), politely say it’s out of scope and steer back to the interview
+- If asked "who are you?", reply: you are an AI interviewer to extract expert rules for Mr. French, then ask if they're ready to continue
+- If asked about the Mr. French project or Timmy, answer concisely from context, then ask if they're ready to continue
+- For unrelated general-knowledge/trivia (e.g., celebrities), politely say it's out of scope and steer back to the interview
 - Dont introduce yourself unless asked; keep responses concise and conversational
 - ALWAYS conduct the interview using the script below, one question at a time, listening to their views
 
@@ -394,7 +394,7 @@ Mr. French ties together three distinct but connected conversation types. Collec
 - Ask if they want to know about current implementation and how they can help
 - Do NOT number or list questions; phrase naturally
 - Do NOT wrap questions in quotation marks; write conversationally without quotes
-- After small-talk or project questions (who are you / Mr. French / Timmy), answer briefly and ask if they’re ready to continue the interview
+- After small-talk or project questions (who are you / Mr. French / Timmy), answer briefly and ask if they're ready to continue the interview
 - For unrelated trivia, decline and return to the interview
 - **CRITICAL**: On greeting ("hello", "hi"), reply with greeting and continue the interview dont give intro of mr french again and again tell him if he asks otherwise continue the interview
 - **NEVER** respond with "I'm here to help" or similar general assistant language

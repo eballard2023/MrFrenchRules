@@ -23,7 +23,8 @@ class ChromaDocumentClient:
         
         # Load environment variables from .env if present
         load_dotenv()
-        
+        print("ENV initalized...")
+
         # Initialize ChromaDB with persistent storage
         try:
             # Use persistent storage in ./chroma_db directory

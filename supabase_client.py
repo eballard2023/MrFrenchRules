@@ -36,11 +36,7 @@ DB_PORT = os.getenv("port", "6543")
 
 # Avoid printing secrets in production
 if os.getenv("ENV", "development") != "production":
-    print(f"DB_HOST: {DB_HOST}")
-    print(f"DB_NAME: {DB_NAME}")
-    print(f"DB_USER: {DB_USER}")
-    print(f"DB_PASSWORD: {'***' if DB_PASSWORD else 'None'}")
-    print(f"DB_PORT: {DB_PORT}")
+    print("ENV initalized...")
 
 class SupabaseClient:
     def __init__(self):

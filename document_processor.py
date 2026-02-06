@@ -12,6 +12,8 @@ from datetime import datetime
 import tempfile
 import hashlib
 import uuid
+import boto3
+from botocore.client import Config
 
 # Document processing imports
 try:
@@ -27,8 +29,32 @@ except ImportError as e:
 # OpenAI for embeddings and ChromaDB for vector storage
 from openai import AsyncOpenAI
 from chroma_client import get_chroma_client
+from io import BytesIO
 
 logger = logging.getLogger(__name__)
+def upload_pdf_to_s3(pdf_stream: BytesIO) -> str:
+    bucket_name= os.getenv("BUCKET_NAME") or "interviewuploadeddocuments"
+    pdf_stream.seek(0)
+
+    s3_client = boto3.client(
+        "s3",
+        aws_access_key_id=os.getenv("ACCESS_KEY"),
+        aws_secret_access_key=os.getenv("SECRET_ACCESS_KEY"),
+        region_name= os.getenv("REGION"),
+        config=Config(signature_version="s3v4")
+    )
+
+    # S3 path: reports-generated/report-<uuid>.pdf
+    file_key = f"interview-documents/report-{uuid.uuid4().hex}.pdf"
+
+    s3_client.upload_fileobj(
+        pdf_stream,
+        bucket_name,
+        file_key,
+        ExtraArgs={"ContentType": "application/pdf"}
+    )
+
+    return f"https://{bucket_name}.s3.amazonaws.com/{file_key}"
 
 class DocumentProcessor:
     def __init__(self, openai_client: AsyncOpenAI):
@@ -37,9 +63,24 @@ class DocumentProcessor:
         self.chunk_size = 200  # tokens per chunk - smaller for better retrieval
         self.chunk_overlap = 50  # overlap between chunks
         
-    async def process_uploaded_file(self, file_path: str, filename: str, expert_name: str, session_id: str) -> Dict:
+    async def process_uploaded_file(self, file_path: str, filename: str, expert_name: str, expert_email: str, session_id: str) -> Dict:
         """Process an uploaded file and store chunks with embeddings in ChromaDB"""
         try:
+            file_ext = filename.lower().split('.')[-1]
+            if file_ext not in ['pdf', 'docx', 'pptx', 'txt']:
+                raise ValueError(f"Unsupported file type: {file_ext}")
+
+            # 🔹 Upload original document to S3
+            s3_url = None
+            try:
+                with open(file_path, "rb") as f:
+                    file_bytes = BytesIO(f.read())
+
+                if file_ext == "pdf":
+                    s3_url = upload_pdf_to_s3(file_bytes)
+                    logger.info(f"☁️ Uploaded PDF to S3: {s3_url}")
+            except Exception as e:
+                logger.error(f"❌ Failed to upload document to S3: {e}")
             # Determine file type
             file_ext = filename.lower().split('.')[-1]
             if file_ext not in ['pdf', 'docx', 'pptx', 'txt']:
@@ -73,7 +114,8 @@ class DocumentProcessor:
                         'expert_name': expert_name,
                         'chunk_index': i,
                         'upload_date': datetime.utcnow().isoformat(),
-                        'file_size': file_size
+                        'file_size': file_size,
+                        "email": expert_email
                     }
                     
                     # Add page/slide specific metadata

@@ -848,6 +848,17 @@
         }
 
         // File preview functions removed - files now upload immediately
+        async function checkDocumentProcessingAvailability() {
+            try {
+                const response = await fetch('/upload-doc/health');
+                if (response.status === 503) {
+                    const attachBtn = document.getElementById('attachBtn');
+                    if (attachBtn) attachBtn.style.display = 'none';
+                }
+            } catch (_) {
+                // ignore
+            }
+        }
 
         async function uploadFile(file) {
             if (!currentSessionId) {
@@ -862,6 +873,7 @@
             formData.append('file', file);
             formData.append('session_id', currentSessionId);
             formData.append('expert_name', 'Expert User');
+            formData.append('expert_email', 'Expert Email');
 
             try {
                 // Start with smooth progress animation
@@ -988,25 +1000,25 @@
         });
 
         // Check if document processing is available
-        async function checkDocumentProcessingAvailability() {
-            try {
-                // Make a simple test request to see if document processing is available
-                const response = await fetch('/upload-doc', {
-                    method: 'POST',
-                    body: new FormData() // Empty form data to trigger validation
-                });
+        // async function checkDocumentProcessingAvailability() {
+        //     try {
+        //         // Make a simple test request to see if document processing is available
+        //         const response = await fetch('/upload-doc', {
+        //             method: 'POST',
+        //             body: new FormData() // Empty form data to trigger validation
+        //         });
                 
-                if (response.status === 503) {
-                    // Document processing not available, hide the attach button
-                    const attachBtn = document.getElementById('attachBtn');
-                    if (attachBtn) {
-                        attachBtn.style.display = 'none';
-                    }
-                }
-            } catch (error) {
-                // Silently handle errors - keep the button visible by default
-            }
-        }
+        //         if (response.status === 503) {
+        //             // Document processing not available, hide the attach button
+        //             const attachBtn = document.getElementById('attachBtn');
+        //             if (attachBtn) {
+        //                 attachBtn.style.display = 'none';
+        //             }
+        //         }
+        //     } catch (error) {
+        //         // Silently handle errors - keep the button visible by default
+        //     }
+        // }
 
         async function sendMessage() {
             const message = messageInput.value.trim();

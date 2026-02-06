@@ -453,6 +453,10 @@ async def start_interview_with_expert(expert_info: ExpertInfo):
     
     # Save to database only
     if not supabase_client.connected:
+        try:
+            supabase_client.connect()
+        except Exception as e:
+            logger.error(f"❌ Supabase connection failed on session start: {e}")
         raise HTTPException(status_code=503, detail="Database not available")
     
     await supabase_client.save_session(session_id, expert_info.expert_name, expert_info.expert_email, expert_info.expertise_area)
@@ -486,12 +490,47 @@ async def start_interview_with_expert(expert_info: ExpertInfo):
 async def start_interview():
     """Legacy endpoint - redirect to expert info collection"""
     raise HTTPException(status_code=400, detail="Please provide expert information first")
+@app.get("/upload-doc/health")
+def upload_doc_health():
+    try:
+        from chroma_client import get_chroma_client
+        client = get_chroma_client()
+        if not client.connected:
+            # Check if credentials are present
+            import os
+            has_api_key = bool(os.getenv("CHROMA_API_KEY"))
+            has_tenant = bool(os.getenv("CHROMA_TENANT"))
+            has_database = bool(os.getenv("CHROMA_DATABASE"))
+            return JSONResponse(
+                status_code=503, 
+                content={
+                    "available": False,
+                    "reason": "ChromaDB not connected",
+                    "credentials_check": {
+                        "has_api_key": has_api_key,
+                        "has_tenant": has_tenant,
+                        "has_database": has_database
+                    },
+                    "suggestion": "Check ChromaDB Cloud credentials in .env file and verify API key has access to the specified tenant/database"
+                }
+            )
+        return {"available": True}
+    except Exception as e:
+        return JSONResponse(
+            status_code=503, 
+            content={
+                "available": False,
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+        )
 
 @app.post("/upload-doc")
 async def upload_document(
     file: UploadFile = File(...),
     session_id: str = Form(...),
-    expert_name: str = Form(...)
+    expert_name: str = Form(...),
+    expert_email: str = Form(...)
 ):
     """Upload and process a document (PDF, DOCX, PPTX, TXT) for interview context"""
     logger.info(f"📄 Document upload requested: {file.filename} for session {session_id}")
@@ -544,6 +583,7 @@ async def upload_document(
         result = await doc_processor.process_uploaded_file(
             file_path=temp_file_path,
             filename=file.filename,
+            expert_email=expert_email,
             expert_name=expert_name,
             session_id=session_id
         )

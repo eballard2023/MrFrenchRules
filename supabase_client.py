@@ -383,8 +383,8 @@ class SupabaseClient:
                     'session_id': row[1], 
                     'expert_name': row[2],
                     'expertise_area': row[3],
-                    'rule_text': row[5],
-                    'completed': row[4],
+                    'rule_text': row[4],  # Corrected: rule_text is column 4
+                    'completed': row[5],  # Corrected: completed is column 5
                     'created_at': row[6],
                     'expert_email': row[7] if len(row) > 7 else None
                 } for row in rows]
@@ -418,8 +418,8 @@ class SupabaseClient:
                     'session_id': row[1], 
                     'expert_name': row[2],
                     'expertise_area': row[3],
-                    'rule_text': row[5],  # Fixed: rule_text is in column 5
-                    'completed': row[4],  # Fixed: completed is in column 4
+                    'rule_text': row[4],  # Corrected: rule_text is in column 4
+                    'completed': row[5],  # Corrected: completed is in column 5
                     'created_at': row[6],
                     'expert_email': row[7] if len(row) > 7 else None
                 } for row in rows]

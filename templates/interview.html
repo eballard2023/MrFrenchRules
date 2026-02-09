@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -116,9 +117,17 @@
         }
 
         @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-            70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+            0% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+            }
+
+            70% {
+                box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+            }
         }
 
         .chat-container {
@@ -162,6 +171,7 @@
                 opacity: 0;
                 transform: translateY(20px);
             }
+
             to {
                 opacity: 1;
                 transform: translateY(0);
@@ -282,7 +292,7 @@
             border: 1px solid rgba(226, 232, 240, 0.5);
             transition: all 0.3s ease;
         }
-        
+
         .input-container.completed {
             background: #f8f9fa;
             border-color: #dee2e6;
@@ -339,7 +349,7 @@
             z-index: 1000;
             backdrop-filter: blur(5px);
         }
-        
+
         .upload-modal.show {
             display: flex;
         }
@@ -404,13 +414,18 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
             animation: shimmer 1.5s infinite;
         }
 
         @keyframes shimmer {
-            0% { transform: translateX(-100%); }
-            100% { transform: translateX(100%); }
+            0% {
+                transform: translateX(-100%);
+            }
+
+            100% {
+                transform: translateX(100%);
+            }
         }
 
         .progress-text {
@@ -544,8 +559,13 @@
         }
 
         @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
         }
 
         .page-back-btn {
@@ -564,7 +584,7 @@
             box-shadow: 0 4px 15px rgba(30, 41, 59, 0.3);
             backdrop-filter: blur(10px);
         }
-        
+
         .page-back-btn:hover {
             background: rgba(30, 41, 59, 1);
             transform: translateY(-2px);
@@ -577,7 +597,7 @@
                 height: 85vh;
             }
         }
-        
+
         @media (max-width: 768px) {
             .container {
                 height: 95vh;
@@ -585,40 +605,40 @@
                 border-radius: 15px;
                 max-width: calc(100vw - 10px);
             }
-            
+
             .header {
                 padding: 15px 60px 15px 20px;
             }
-            
+
             .header h1 {
                 font-size: 18px;
             }
-            
+
             .header-btn {
                 padding: 6px 12px;
                 font-size: 11px;
                 min-width: 80px;
             }
-            
+
             .header-actions {
                 top: 15px;
                 right: 15px;
             }
-            
+
             .messages {
                 padding: 15px;
             }
-            
+
             .message-content {
                 max-width: 85%;
                 padding: 15px 20px;
                 font-size: 14px;
             }
-            
+
             .input-area {
                 padding: 15px;
             }
-            
+
             .page-back-btn {
                 top: 10px;
                 left: 10px;
@@ -626,52 +646,52 @@
                 font-size: 12px;
             }
         }
-        
+
         @media (max-width: 480px) {
             .container {
                 height: 98vh;
                 margin: 2px;
                 border-radius: 10px;
             }
-            
+
             .header {
                 padding: 12px 50px 12px 15px;
             }
-            
+
             .header h1 {
                 font-size: 16px;
             }
-            
+
             .header-btn {
                 padding: 4px 8px;
                 font-size: 10px;
                 min-width: 60px;
             }
-            
+
             .header-actions {
                 top: 10px;
                 right: 10px;
             }
-            
+
             .messages {
                 padding: 10px;
             }
-            
+
             .message-content {
                 max-width: 90%;
                 padding: 12px 15px;
                 font-size: 13px;
             }
-            
+
             .input-area {
                 padding: 10px;
             }
-            
+
             .message-input {
                 padding: 12px 15px;
                 font-size: 14px;
             }
-            
+
             .send-button {
                 width: 45px;
                 height: 45px;
@@ -679,11 +699,12 @@
         }
     </style>
 </head>
+
 <body>
     <a href="/" class="page-back-btn">
         <i class="fas fa-arrow-left"></i> Back
     </a>
-    
+
     <div class="container">
         <div class="header">
             <div class="header-actions">
@@ -698,24 +719,27 @@
                 </h1>
             </div>
         </div>
-        
+
         <div class="chat-container">
             <div class="messages" id="messages">
                 <!-- Messages will be added here -->
             </div>
-            
+
             <div class="loading" id="loading">
                 <i class="fas fa-spinner"></i>
                 <p>Processing your response...</p>
             </div>
-            
+
             <div class="input-area">
                 <div class="input-container">
-                    <input type="file" class="file-input" id="fileInput" accept=".pdf,.docx,.pptx,.txt" style="display: none;">
-                    <button class="attach-button" id="attachBtn" onclick="openFileDialog()" title="Attach document (PDF, DOCX, PPTX, TXT)">
+                    <input type="file" class="file-input" id="fileInput" accept=".pdf,.docx,.pptx,.txt"
+                        style="display: none;">
+                    <button class="attach-button" id="attachBtn" onclick="openFileDialog()"
+                        title="Attach document (PDF, DOCX, PPTX, TXT)">
                         <i class="fas fa-paperclip"></i>
                     </button>
-                    <input type="text" class="message-input" id="messageInput" placeholder="Share your expertise here..." disabled>
+                    <input type="text" class="message-input" id="messageInput"
+                        placeholder="Share your expertise here..." disabled>
                     <button class="send-button" id="sendBtn" onclick="sendMessage()" disabled>
                         <i class="fas fa-paper-plane"></i>
                     </button>
@@ -752,20 +776,20 @@
         const status = document.getElementById('status');
         const loading = document.getElementById('loading');
 
-        messageInput.addEventListener('keypress', function(e) {
+        messageInput.addEventListener('keypress', function (e) {
             if (e.key === 'Enter' && !sendBtn.disabled) {
                 sendMessage();
             }
         });
 
-        window.addEventListener('load', function() {
+        window.addEventListener('load', function () {
             // Get session_id from URL parameters
             const urlParams = new URLSearchParams(window.location.search);
             const sessionId = urlParams.get('session_id');
-            
+
             // Check document processing availability
             checkDocumentProcessingAvailability();
-            
+
             if (sessionId) {
                 // Session already exists, load the conversation
                 currentSessionId = sessionId;
@@ -779,20 +803,20 @@
         async function loadExistingSession(sessionId) {
             try {
                 showLoading(true);
-                
+
                 const response = await fetch(`/session/${sessionId}/conversation`);
-                
+
                 if (response.ok) {
                     const data = await response.json();
                     console.log('Session data loaded:', data);
-                    
+
                     if (data.conversation && data.conversation.length > 0) {
                         // Load existing conversation
                         console.log(`Loading ${data.conversation.length} messages`);
                         data.conversation.forEach(msg => {
                             addMessage(msg.role === 'assistant' ? 'ai' : 'user', msg.content);
                         });
-                        
+
                         if (data.is_complete) {
                             completeInterview();
                         }
@@ -800,7 +824,7 @@
                         // New session with no conversation yet
                         console.log('No conversation history found, starting fresh');
                     }
-                    
+
                     // Always enable input for active sessions
                     if (!data.is_complete) {
                         messageInput.disabled = false;
@@ -878,12 +902,12 @@
             try {
                 // Start with smooth progress animation
                 updateProgress(5, 'Preparing upload...');
-                
+
                 // Simulate realistic upload progress
                 setTimeout(() => updateProgress(15, 'Uploading file...'), 300);
                 setTimeout(() => updateProgress(25, 'Uploading file...'), 600);
                 setTimeout(() => updateProgress(35, 'Uploading file...'), 900);
-                
+
                 const response = await fetch('/upload-doc', {
                     method: 'POST',
                     body: formData
@@ -894,9 +918,9 @@
                 setTimeout(() => updateProgress(55, 'Extracting text...'), 1500);
                 setTimeout(() => updateProgress(65, 'Creating chunks...'), 1800);
                 setTimeout(() => updateProgress(75, 'Generating embeddings...'), 2100);
-                
+
                 const result = await response.json();
-                
+
                 setTimeout(() => updateProgress(85, 'Storing data...'), 2400);
                 setTimeout(() => updateProgress(95, 'Finalizing...'), 2700);
 
@@ -940,16 +964,16 @@
 
         function addDocumentMessage(filename, fileType, chunksProcessed) {
             const messagesContainer = document.getElementById('messages');
-            
+
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message system-message';
-            
+
             const messageContent = document.createElement('div');
             messageContent.className = 'message-content';
-            
+
             const documentAttachment = document.createElement('div');
             documentAttachment.className = 'document-attachment';
-            
+
             const icon = getFileIcon(fileType);
             documentAttachment.innerHTML = `
                 <div class="document-icon">
@@ -960,13 +984,13 @@
                     <div class="document-type">${fileType} • ${chunksProcessed} sections</div>
                 </div>
             `;
-            
+
             const successText = document.createElement('p');
             successText.textContent = `Document uploaded successfully!`;
             successText.style.marginTop = '8px';
             successText.style.color = '#059669';
             successText.style.fontSize = '14px';
-            
+
             messageContent.appendChild(documentAttachment);
             messageContent.appendChild(successText);
             messageDiv.appendChild(messageContent);
@@ -975,7 +999,7 @@
         }
 
         function getFileIcon(fileType) {
-            switch(fileType.toLowerCase()) {
+            switch (fileType.toLowerCase()) {
                 case 'pdf': return 'file-pdf';
                 case 'docx': return 'file-word';
                 case 'pptx': return 'file-powerpoint';
@@ -985,7 +1009,7 @@
         }
 
         // File input event listener
-        document.getElementById('fileInput').addEventListener('change', async function(e) {
+        document.getElementById('fileInput').addEventListener('change', async function (e) {
             const file = e.target.files[0];
             if (file) {
                 if (validateFileType(file)) {
@@ -1007,7 +1031,7 @@
         //             method: 'POST',
         //             body: new FormData() // Empty form data to trigger validation
         //         });
-                
+
         //         if (response.status === 503) {
         //             // Document processing not available, hide the attach button
         //             const attachBtn = document.getElementById('attachBtn');
@@ -1022,20 +1046,20 @@
 
         async function sendMessage() {
             const message = messageInput.value.trim();
-            
+
             // Files now upload immediately when selected, so no need to check here
-            
+
             if (!message || !currentSessionId) return;
 
             addMessage('user', message);
             messageInput.value = '';
-            
+
             try {
                 showLoading(true);
                 sendBtn.disabled = true;
                 attachBtn.disabled = true;
                 messageInput.disabled = true;
-                
+
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1044,17 +1068,17 @@
                         session_id: currentSessionId
                     })
                 });
-                
+
                 const data = await response.json();
-                
+
                 if (response.ok) {
                     addMessage('ai', data.message);
-                    
+
                     questionNumber = data.question_number;
                     // status.textContent = 'Continue sharing your insights';
-                    
+
                     submitBtn.disabled = false;
-                    
+
                     if (data.is_complete) {
                         completeInterview(data.final_note);
                     } else {
@@ -1063,10 +1087,10 @@
                         attachBtn.disabled = false;
                     }
                 } else {
-                addMessage('ai', `Error: ${data.detail}`);
-                messageInput.disabled = false;
-                sendBtn.disabled = false;
-                attachBtn.disabled = false;
+                    addMessage('ai', `Error: ${data.detail}`);
+                    messageInput.disabled = false;
+                    sendBtn.disabled = false;
+                    attachBtn.disabled = false;
                 }
             } catch (error) {
                 addMessage('ai', `Error: ${error.message}`);
@@ -1079,31 +1103,31 @@
         }
 
         let isSubmitting = false;
-        
+
         async function submitInterview() {
             console.log('submitInterview called, sessionId:', currentSessionId);
-            
+
             if (!currentSessionId || isSubmitting) {
                 console.log('No session ID or already submitting, returning');
                 return;
             }
-            
+
             try {
                 isSubmitting = true;
                 console.log('Starting interview submission...');
                 showLoading(true);
                 submitBtn.disabled = true;
                 submitBtn.textContent = 'Processing...';
-                
+
                 const response = await fetch(`/submit_interview/${currentSessionId}`, {
                     method: 'POST'
                 });
-                
+
                 const data = await response.json();
                 console.log('Submission response:', data);
-                
+
                 if (response.ok) {
-                    completeInterview('Thank you for sharing your expertise. Your insights have been saved and will help train Mr.French AI.');
+                    completeInterview('Thank you for sharing your expertise. Your insights have been saved and will help train Jamie AI.');
                 } else {
                     addMessage('ai', `Submission error: ${data.detail}`);
                     submitBtn.disabled = false;
@@ -1120,31 +1144,31 @@
                 showLoading(false);
             }
         }
-        
+
         function completeInterview(finalMessage) {
             isInterviewComplete = true;
-            
+
             // Add final message
             if (finalMessage) {
                 addMessage('ai', finalMessage);
             }
-            
+
             // Block all input
             messageInput.disabled = true;
             sendBtn.disabled = true;
             attachBtn.disabled = true;
             submitBtn.disabled = true;
-            
+
             // Update status
             // status.textContent = ' Interview completed! Thank you for your valuable insights.';
-            
+
             // Change input placeholder
             messageInput.placeholder = 'Interview completed - Thank you!';
-            
+
             // Add visual indication
             messageInput.style.backgroundColor = '#f8f9fa';
             messageInput.style.color = '#6c757d';
-            
+
             // Style the input container
             const inputContainer = document.querySelector('.input-container');
             if (inputContainer) {
@@ -1155,22 +1179,22 @@
         function addMessage(sender, content) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${sender}`;
-            
+
             const avatar = document.createElement('div');
             avatar.className = 'message-avatar';
             if (sender === 'ai') {
-                avatar.innerHTML = '<img src="MrFrench.png" alt="Mr. French" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;">';
+                avatar.innerHTML = '<img src="MrFrench.png" alt="Jamie" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;">';
             } else {
                 avatar.innerHTML = '<i class="fas fa-user"></i>';
             }
-            
+
             const messageContent = document.createElement('div');
             messageContent.className = 'message-content';
             messageContent.innerHTML = formatText(content);
-            
+
             messageDiv.appendChild(avatar);
             messageDiv.appendChild(messageContent);
-            
+
             messagesContainer.appendChild(messageDiv);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
@@ -1187,4 +1211,5 @@
         }
     </script>
 </body>
+
 </html>

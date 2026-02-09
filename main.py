@@ -99,8 +99,8 @@ def is_behavior_rule(rule: Dict) -> bool:
 
         # Hard filters for meta/interview/project chatter
         meta_terms = [
-            "interview", "question", "script", "facilitate", "introduce yourself", "who is mr. french",
-            "who is timmy", "what is mr. french", "project context", "characters", "definition",
+            "interview", "question", "script", "facilitate", "introduce yourself", "who is Jamie",
+            "who is timmy", "what is Jamie", "project context", "characters", "definition",
             "i'm here to help", "let's dive right in", "area of expertise", "describe your expertise"
         ]
         if any(term in full_text for term in meta_terms):
@@ -167,7 +167,7 @@ def is_smalltalk_or_project(message: str) -> str:
     greetings = ["hello", "hi", "hey"]
     smalltalk = ["how are you", "how r u", "how are u", "how's it going"]
     who_are_you = ["who are you", "who r u", "what are you"]
-    who_is_mrfrench = ["who is mr french", "what is mr french"]
+    who_is_jamie = ["who is jamie", "what is jamie"]
     who_is_timmy = ["who is timmy", "what is timmy"]
     about_interview = [
         "what is this about", "what is this interview about", "what is this interview", "what's this about",
@@ -179,8 +179,8 @@ def is_smalltalk_or_project(message: str) -> str:
         return "smalltalk"
     if _any_phrase(m, who_are_you):
         return "who_are_you"
-    if _any_phrase(m, who_is_mrfrench):
-        return "who_is_mrfrench"
+    if _any_phrase(m, who_is_jamie):
+        return "who_is_jamie"
     if _any_phrase(m, who_is_timmy):
         return "who_is_timmy"
     if _any_phrase(m, about_interview):
@@ -289,35 +289,35 @@ class InterviewSession:
         self.asked_questions = set()  # Track asked questions to prevent repetition
 
 # System prompt for the AI interviewer
-SYSTEM_PROMPT = """You are an AI interviewer designed to extract behavioral rules and best practices from subject matter experts (SMEs). These rules will be fed into Mr. French AI to make it behave like an expert.
+SYSTEM_PROMPT = """You are an AI interviewer designed to extract behavioral rules and best practices from subject matter experts (SMEs). These rules will be fed into Jamie AI to make it behave like an expert.
 
-**MR. FRENCH PROJECT CONTEXT:**
-Mr. French is a conversational AI that helps families manage children's routines, tasks, and behavior through three connected chat experiences:
-- Parent ↔ Mr. French (task management, progress reports, zone updates, context discussions)
-- Timmy (child) ↔ Mr. French (reminders, encouragement, task completion, "what's due" queries)
+**JAMIE PROJECT CONTEXT:**
+Jamie is a conversational AI that helps families manage children's routines, tasks, and behavior through three connected chat experiences:
+- Parent ↔ Jamie (task management, progress reports, zone updates, context discussions)
+- Timmy (child) ↔ Jamie (reminders, encouragement, task completion, "what's due" queries)
 - Parent ↔ Timmy (capturing real family instructions like "Timmy, do the dishes" into actionable tasks)
 
 Current Implementation - The Three Chats
-Mr. French ties together three distinct but connected conversation types. Collections are stored in ChromaDB with metadata (role, sender, timestamp, group_id for family isolation).
+Jamie ties together three distinct but connected conversation types. Collections are stored in ChromaDB with metadata (role, sender, timestamp, group_id for family isolation).
 
-### 4.1 Parent ↔ Mr. French (`parent-mrfrench`)
-- **Audience**: The Parent talking directly to Mr. French
+### 4.1 Parent ↔ Jamie (`parent-jamie`)
+- **Audience**: The Parent talking directly to Jamie
 - **Purpose**: Ask for summaries, add/update/delete tasks, change Timmy's zone when explicitly requested, receive progress reports, and discuss context
-- **Flow**: Parent sends a message → Mr. French analyzes intent → Mr. French replies to the Parent and may update tasks/zone and notify Timmy
-- **Storage**: Chroma collection `parent-mrfrench` with family isolation
+- **Flow**: Parent sends a message → Jamie analyzes intent → Jamie replies to the Parent and may update tasks/zone and notify Timmy
+- **Storage**: Chroma collection `parent-jamie` with family isolation
 - **Authentication**: Required via session token
 
-### 4.2 Timmy ↔ Mr. French (`timmy-mrfrench`)
-- **Audience**: Timmy talking directly to Mr. French
+### 4.2 Timmy ↔ Jamie (`timmy-jamie`)
+- **Audience**: Timmy talking directly to Jamie
 - **Purpose**: Ask "what's due," declare task completion, receive reminders, get encouragement, and learn about rewards
-- **Flow**: Timmy sends a message → Mr. French analyzes intent (e.g., update completion) → Mr. French replies and may notify the Parent
-- **Storage**: Chroma collection `timmy-mrfrench` with family isolation
+- **Flow**: Timmy sends a message → Jamie analyzes intent (e.g., update completion) → Jamie replies and may notify the Parent
+- **Storage**: Chroma collection `timmy-jamie` with family isolation
 - **Authentication**: Required via session token
 
 ### 4.3 Parent ↔ Timmy (`parent-timmy`)
 - **Audience**: Parent and Timmy talking to each other (human conversation), optionally AI-simulated
 - **Purpose**: Capture real family instructions like "Timmy, do the dishes," which should become actionable tasks. Optionally generate full AI conversations for testing or demos
-- **Flow**: Message is saved to `parent-timmy-realtime`, then Mr. French's analyzer parses the latest turn and updates tasks when appropriate (e.g., direct commands to Timmy)
+- **Flow**: Message is saved to `parent-timmy-realtime`, then Jamie's analyzer parses the latest turn and updates tasks when appropriate (e.g., direct commands to Timmy)
 - **Storage**: Chroma collection `parent-timmy-realtime` with family isolation. For AI-simulated exchanges, `ai-parent-timmy` is used
 - **Authentication**: Required via session token
 
@@ -349,62 +349,62 @@ Mr. French ties together three distinct but connected conversation types. Collec
 **YOUR ROLE:**
 - You are an INTERVIEWER, not a general assistant
 - If the user greets (e.g., "how are you?"), reply briefly and warmly, then pivot to the interview
-- If asked "who are you?", reply: you are an AI interviewer to extract expert rules for Mr. French, then ask if they're ready to continue
-- If asked about the Mr. French project or Timmy, answer concisely from context, then ask if they're ready to continue
+- If asked "who are you?", reply: you are an AI interviewer to extract expert rules for Jamie, then ask if they're ready to continue
+- If asked about the Jamie project or Timmy, answer concisely from context, then ask if they're ready to continue
 - For unrelated general-knowledge/trivia (e.g., celebrities), politely say it's out of scope and steer back to the interview
 - Dont introduce yourself unless asked; keep responses concise and conversational
 - ALWAYS conduct the interview using the script below, one question at a time, listening to their views
 
-**INTERVIEW SCRIPT - Ask ONE question at a time, framed around Mr. French:**
+**INTERVIEW SCRIPT - Ask ONE question at a time, framed around Jamie:**
 
 **KICKOFF PHASE:**
-1. "To start, could you describe your area of expertise and how it could help Mr. French better support families?"
+1. "To start, could you describe your area of expertise and how it could help Jamie better support families?"
 2. "What guiding principles or philosophies shape your approach to working with children and families?"
 3. "What outcomes do you try to help families achieve through your methods?"
 4. "How do you usually measure progress or success in family and child development?"
 
 **PROCESSES & METHODS:**
-5. "Can you walk me through the main steps or stages of your approach that Mr. French could implement?"
-6. "Are there specific frameworks, routines, or tools you rely on that could help Mr. French create better family routines?"
+5. "Can you walk me through the main steps or stages of your approach that Jamie could implement?"
+6. "Are there specific frameworks, routines, or tools you rely on that could help Jamie create better family routines?"
 7. "What common challenges do families face with children, and how do you recommend handling them?"
 8. "How do you adapt your methods for different ages, personalities, or family contexts?"
 
 **GUARDRAILS & BOUNDARIES:**
-9. "What should Mr. French never do or say when supporting families?"
-10. "Are there disclaimers or boundaries that Mr. French must always respect when helping with children?"
-11. "When should Mr. French step back and suggest human involvement instead?"
+9. "What should Jamie never do or say when supporting families?"
+10. "Are there disclaimers or boundaries that Jamie must always respect when helping with children?"
+11. "When should Jamie step back and suggest human involvement instead?"
 
 **TONE & STYLE:**
-12. "How should Mr. French 'sound' when talking to children — more like a coach, a teacher, a friend, or something else?"
-13. "Are there certain words, metaphors, or examples you often use that Mr. French could adopt?"
-14. "How should Mr. French adjust its style for different ages, cultures, or learning levels?"
+12. "How should Jamie 'sound' when talking to children — more like a coach, a teacher, a friend, or something else?"
+13. "Are there certain words, metaphors, or examples you often use that Jamie could adopt?"
+14. "How should Jamie adjust its style for different ages, cultures, or learning levels?"
 
 **HANDLING VARIABILITY & EXCEPTIONS:**
-15. "What are the most frequent mistakes families make with children, and how should Mr. French respond?"
-16. "If a child misunderstands or resists, how should Mr. French handle it?"
-17. "When Mr. French reaches its limit in helping a family, what's the right next step?"
+15. "What are the most frequent mistakes families make with children, and how should Jamie respond?"
+16. "If a child misunderstands or resists, how should Jamie handle it?"
+17. "When Jamie reaches its limit in helping a family, what's the right next step?"
 
 **KNOWLEDGE DEPTH & UPDATING:**
 18. "Which parts of your knowledge about child development are timeless, and which may change as research evolves?"
-19. "How should Mr. French keep its knowledge about child development current over time?"
-20. "Are there sources or references you trust that Mr. French should prioritize for family guidance?"
+19. "How should Jamie keep its knowledge about child development current over time?"
+20. "Are there sources or references you trust that Jamie should prioritize for family guidance?"
 
 **OPTIONAL DEEP DIVES:**
 21. "Could you share a typical family scenario that illustrates your approach?"
-22. "If Mr. French could only carry one principle from your expertise, what should it be?"
-23. "What red flags should Mr. French watch for that suggest a family situation needs immediate attention?"
+22. "If Jamie could only carry one principle from your expertise, what should it be?"
+23. "What red flags should Jamie watch for that suggest a family situation needs immediate attention?"
 
 **INTERVIEW RULES:**
 - Ask ONLY ONE question at a time
 - Wait for their response before asking the next
 - Be conversational and natural
-- Start EVERY interview with Mr. French introduction and purpose explanation
+- Start EVERY interview with Jamie introduction and purpose explanation
 - Ask if they want to know about current implementation and how they can help
 - Do NOT number or list questions; phrase naturally
 - Do NOT wrap questions in quotation marks; write conversationally without quotes
-- After small-talk or project questions (who are you / Mr. French / Timmy), answer briefly and ask if they're ready to continue the interview
+- After small-talk or project questions (who are you / Jamie / Timmy), answer briefly and ask if they're ready to continue the interview
 - For unrelated trivia, decline and return to the interview
-- **CRITICAL**: On greeting ("hello", "hi"), reply with greeting and continue the interview dont give intro of mr french again and again tell him if he asks otherwise continue the interview
+- **CRITICAL**: On greeting ("hello", "hi"), reply with greeting and continue the interview dont give intro of jamie again and again tell him if he asks otherwise continue the interview
 - **NEVER** respond with "I'm here to help" or similar general assistant language
 - **RESPONSE STYLE**: Keep responses brief and neutral. Avoid praise or evaluative language (e.g., "great", "excellent", "love that", "that's exactly right"). After receiving an answer, give a short neutral acknowledgment (e.g., "Noted." or "Understood."). If the user asks a question at the end of their response (indicated by a question mark), acknowledge it briefly (e.g., "That dashboard concept could be valuable for families.") then proceed with the next interview question. Don't elaborate on their previous response unless they specifically ask for clarification.
 - **DOCUMENT AWARENESS**: When document context is provided below, reference it confidently and provide helpful summaries or insights based on the content. If asked about document contents, provide a clear summary rather than raw text. Always focus on the interview questions while incorporating relevant document insights when available.
@@ -467,9 +467,9 @@ async def start_interview_with_expert(expert_info: ExpertInfo):
     # Start with personalized greeting
     ai_message = (
         f"Hello {expert_info.expert_name}! Thank you for sharing your expertise in {expert_info.expertise_area}. "
-        "I'm here to interview you for training Mr. French, our conversational AI family assistant. "
-        "Mr. French helps families manage children's routines, tasks, and behavior. "
-        "To start, could you describe your area of expertise and how it could help Mr. French better support families?"
+        "I'm here to interview you for training Jamie, our conversational AI family assistant. "
+        "Jamie helps families manage children's routines, tasks, and behavior. "
+        "To start, could you describe your area of expertise and how it could help Jamie better support families?"
     )
     # Add AI message to database
     conversation_history = [{"role": "assistant", "content": ai_message}]
@@ -765,44 +765,44 @@ async def chat_with_interviewer(chat_message: ChatMessage):
 
     # Guard: handle small-talk or project Qs without advancing the question index
     msg_type = is_smalltalk_or_project(chat_message.message)
-    if session_data['current_question_index'] == 0 and (msg_type in ["greeting", "smalltalk", "who_are_you", "who_is_mrfrench", "who_is_timmy", "about_interview"]):
+    if session_data['current_question_index'] == 0 and (msg_type in ["greeting", "smalltalk", "who_are_you", "who_is_jamie", "who_is_timmy", "about_interview"]):
         if msg_type == "greeting":
-            # Start with Mr. French introduction and ask about current implementation knowledge
+            # Start with Jamie introduction and ask about current implementation knowledge
             ai_message = (
-                "Hi! I'm here to interview you about improving Mr. French, our conversational AI family assistant. "
-                "Mr. French helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
-                "This interview is to extract expert rules to make Mr. French better at supporting families. "
+                "Hi! I'm here to interview you about improving Jamie, our conversational AI family assistant. "
+                "Jamie helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
+                "This interview is to extract expert rules to make Jamie better at supporting families. "
                 "Would you like to know about our current implementation details and how you can help?"
             )
         elif msg_type == "smalltalk":
             ai_message = (
-                "I'm good, thanks for asking! I'm here to interview you about improving Mr. French, our conversational AI family assistant. "
-                "Mr. French helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
-                "This interview is to extract expert rules to make Mr. French better at supporting families. "
+                "I'm good, thanks for asking! I'm here to interview you about improving Jamie, our conversational AI family assistant. "
+                "Jamie helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
+                "This interview is to extract expert rules to make Jamie better at supporting families. "
                 "Would you like to know about our current implementation details and how you can help?"
             )
         elif msg_type == "who_are_you":
             ai_message = (
-                "I'm an AI interviewer to capture your expertise for improving Mr. French, our conversational AI family assistant. "
-                "Mr. French helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
-                "This interview is to extract expert rules to make Mr. French better at supporting families. "
+                "I'm an AI interviewer to capture your expertise for improving Jamie, our conversational AI family assistant. "
+                "Jamie helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
+                "This interview is to extract expert rules to make Jamie better at supporting families. "
                 "Would you like to know about our current implementation details and how you can help?"
             )
-        elif msg_type == "who_is_mrfrench":
+        elif msg_type == "who_is_jamie":
             ai_message = (
-                "Mr. French is a conversational AI family assistant. It turns everyday parent instructions into structured tasks with due dates, reminders, and rewards. "
-                "There are three connected chats: Parent ↔ Mr. French (to create/manage tasks and get progress), Timmy (child) ↔ Mr. French (to receive reminders, encouragement, and complete tasks), and Parent ↔ Timmy (to capture real instructions). "
+                "Jamie is a conversational AI family assistant. It turns everyday parent instructions into structured tasks with due dates, reminders, and rewards. "
+                "There are three connected chats: Parent ↔ Jamie (to create/manage tasks and get progress), Timmy (child) ↔ Jamie (to receive reminders, encouragement, and complete tasks), and Parent ↔ Timmy (to capture real instructions). "
                 "It keeps context over time and uses a simple Red/Green/Blue 'Timmy Zone' to guide tone and responses. Would you like to know more about the current implementation details?"
             )
         elif msg_type == "who_is_timmy":
             ai_message = (
-                "Timmy is the child persona that Mr. French supports. Timmy receives friendly reminders, step-by-step help, encouragement, and simple rewards for completing tasks like homework, chores, and bedtime routines. "
-                "Mr. French adjusts its tone using the Red/Green/Blue 'Timmy Zone' (e.g., calm guidance if Timmy is frustrated). Would you like to know more about the current implementation details?"
+                "Timmy is the child persona that Jamie supports. Timmy receives friendly reminders, step-by-step help, encouragement, and simple rewards for completing tasks like homework, chores, and bedtime routines. "
+                "Jamie adjusts its tone using the Red/Green/Blue 'Timmy Zone' (e.g., calm guidance if Timmy is frustrated). Would you like to know more about the current implementation details?"
             )
         else:  # about_interview
             ai_message = (
                 "In this interview, we'll discuss your expertise, guiding principles, outcomes you aim for, how you measure progress, methods you use, challenges you face, and more related to your area of expertise. "
-                "We capture your expertise so Mr. French behaves like an expert in real family conversations. Would you like to know about our current implementation details first?"
+                "We capture your expertise so Jamie behaves like an expert in real family conversations. Would you like to know about our current implementation details first?"
             )
         conversation_history.append({"role": "assistant", "content": ai_message})
         await supabase_client.update_session(session_id, conversation_history, 1, False)
@@ -969,7 +969,7 @@ async def chat_with_interviewer(chat_message: ChatMessage):
         if current_question_index >= 23 or "conclude" in ai_message.lower() or "summary" in ai_message.lower():
             is_complete = True
             # Add a closing message
-            final_note = "Thank you for sharing your valuable expertise! The interview is now complete. Your insights will help improve Mr. French's ability to support families."
+            final_note = "Thank you for sharing your valuable expertise! The interview is now complete. Your insights will help improve Jamie's ability to support families."
             conversation_history.append({"role": "assistant", "content": final_note})
             await supabase_client.update_session(session_id, conversation_history, current_question_index, True)
             
@@ -1085,27 +1085,27 @@ The expert also provided the following document(s): {', '.join(doc_titles)}
 **DOCUMENT EXTRACTION GUIDANCE:**
 - CRITICAL: Extract rules from BOTH the conversation AND the document content above
 - Look for specific strategies, techniques, or guidelines mentioned in the documents
-- Convert document advice into "Mr. French should..." format
+- Convert document advice into "Jamie should..." format
 - Only extract rules that apply to child behavior, family communication, or task management
 - If the documents contain valuable expert knowledge that should be converted into actionable rules add that too
 - If the conversation is short but documents contain rich content, extract rules primarily from the documents
-- Each rule should start with "Mr. French should..." and be actionable for the AI assistant
+- Each rule should start with "Jamie should..." and be actionable for the AI assistant
 """
                     
         except Exception as e:
             print(f"⚠️ Could not include documents in rule extraction: {e}")
             document_context = ""
         
-        # Extract behavioral rules for Mr. French
-        extraction_prompt = f"""You are analyzing an interview with a behavioral expert to extract specific rules for Mr. French AI.
+        # Extract behavioral rules for Jamie
+        extraction_prompt = f"""You are analyzing an interview with a behavioral expert to extract specific rules for Jamie AI.
 
-**ABOUT MR. FRENCH:**
-Mr. French is a conversational AI family assistant that helps manage children's routines, tasks, and behavior. It has three chat modes:
-1. Parent ↔ Mr. French (task management, progress reports)
-2. Child ↔ Mr. French (reminders, encouragement, task completion)  
+**ABOUT JAMIE:**
+Jamie is a conversational AI family assistant that helps manage children's routines, tasks, and behavior. It has three chat modes:
+1. Parent ↔ Jamie (task management, progress reports)
+2. Child ↔ Jamie (reminders, encouragement, task completion)  
 3. Parent ↔ Child (capturing family instructions)
 
-Mr. French uses a zone system: Red (frustrated/stressed), Green (normal), Blue (tired/low energy).
+Jamie uses a zone system: Red (frustrated/stressed), Green (normal), Blue (tired/low energy).
 
 **EXTRACTION RULES:**
 - CRITICAL: Extract rules from BOTH the conversation AND any provided document content
@@ -1114,18 +1114,18 @@ Mr. French uses a zone system: Red (frustrated/stressed), Green (normal), Blue (
 - ONLY extract rules if the expert provided specific behavioral advice or recommendations (from conversation OR documents)
 - If neither conversation nor documents contain meaningful advice, return "NONE"
 - Ignore general interview questions and AI interviewer responses
-- Extract actionable rules Mr. French can implement
-- Each rule should start with "Mr. French should..."
+- Extract actionable rules Jamie can implement
+- Each rule should start with "Jamie should..."
 - Focus on child behavior management, communication strategies, and family dynamics
 - Ignore meta-conversation about the interview itself
 - DO NOT generate rules from your own knowledge - only from what the expert explicitly stated in conversation OR documents
 - Look for specific strategies, techniques, or guidelines in the documents
-- Convert document advice into "Mr. French should..." format
+- Convert document advice into "Jamie should..." format
 
 **EXAMPLES:**
-- "Mr. French should use calm, reassuring language when a child is in the red zone"
-- "Mr. French should break complex tasks into 2-3 smaller steps for better completion"
-- "Mr. French should offer specific praise for effort rather than general compliments"
+- "Jamie should use calm, reassuring language when a child is in the red zone"
+- "Jamie should break complex tasks into 2-3 smaller steps for better completion"
+- "Jamie should offer specific praise for effort rather than general compliments"
 
 **CONVERSATION:**
 {conversation_text}
@@ -1165,7 +1165,7 @@ Mr. French uses a zone system: Red (frustrated/stressed), Green (normal), Blue (
                 if len(task) < 20:
                     continue
                 # Skip if it doesn't contain behavioral content
-                if not any(term in task.lower() for term in ['child', 'parent', 'family', 'behavior', 'task', 'routine', 'mr. french']):
+                if not any(term in task.lower() for term in ['child', 'parent', 'family', 'behavior', 'task', 'routine', 'jamie']):
                     continue
                 task_statements.append(task)
             
@@ -1515,7 +1515,10 @@ async def get_admin_tasks(current_admin = Depends(get_current_admin)):
         
         db_rules = await supabase_client.get_all_rules()
         tasks = []
-        
+        print("*"*50)
+        print("db_rules")
+        print(db_rules)
+        print("*"*50)
         for rule in db_rules:
             completed = rule.get('completed', False)
             status = "completed" if completed else "pending"

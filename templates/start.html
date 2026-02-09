@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -159,11 +160,17 @@
         }
 
         @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
         }
     </style>
 </head>
+
 <body>
     <a href="/admin" class="admin-link">
         <i class="fas fa-cog"></i> Admin Panel
@@ -171,9 +178,10 @@
 
     <div class="container">
         <div class="header">
-            <img src="MrFrench.png" alt="Mr. French" style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover; margin-bottom: 15px;">
+            <img src="MrFrench.png" alt="Jamie"
+                style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover; margin-bottom: 15px;">
             <h1>Expert Interview</h1>
-            <p>Share your expertise to help train Mr. French AI for better family support</p>
+            <p>Share your expertise to help train Jamie for better family support</p>
         </div>
 
         <div class="error-message" id="errorMessage">
@@ -193,7 +201,8 @@
 
             <div class="form-group">
                 <label for="expertiseArea">Area of Expertise</label>
-                <input type="text" id="expertiseArea" class="form-input" placeholder="Child Psychology, Family Therapy, etc.">
+                <input type="text" id="expertiseArea" class="form-input"
+                    placeholder="Child Psychology, Family Therapy, etc.">
             </div>
 
             <button type="submit" class="start-btn" id="startBtn">
@@ -212,9 +221,9 @@
         const loading = document.getElementById('loading');
         const errorMessage = document.getElementById('errorMessage');
 
-        expertForm.addEventListener('submit', async function(e) {
+        expertForm.addEventListener('submit', async function (e) {
             e.preventDefault();
-            
+
             const expertName = document.getElementById('expertName').value.trim();
             const expertEmail = document.getElementById('expertEmail').value.trim();
             const expertiseArea = document.getElementById('expertiseArea').value.trim();
@@ -270,4 +279,5 @@
         }
     </script>
 </body>
+
 </html>

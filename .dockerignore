@@ -1,0 +1,45 @@
+# Git and IDE
+.git
+.github
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv
+.venv
+env
+ENV
+*.egg-info
+.eggs
+dist
+build
+
+# Secrets and local env (inject at run time)
+.env
+.env.*
+!.env.example
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
+temp
+tmp
+extracted_rules_*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Optional: uncomment to keep image smaller (skip local DB files)
+# *.db
+# *.sqlite
+# chroma_db

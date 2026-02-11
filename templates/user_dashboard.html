@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Interview Dashboard - AI Coach</title>
+    <link rel="icon" href="/MrFrench.png" type="image/png">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #f8fafc;
+            min-height: 100vh;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #111827 0%, #1f2937 100%);
+            color: white;
+            padding: 18px 24px;
+            box-shadow: 0 4px 10px rgba(15, 23, 42, 0.35);
+        }
+
+        .header-content {
+            max-width: 1100px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .header-title h1 {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .header-sub {
+            font-size: 13px;
+            opacity: 0.8;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .user-pill {
+            font-size: 13px;
+            background: rgba(15, 23, 42, 0.4);
+            padding: 6px 10px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .logout-btn {
+            border-radius: 999px;
+            padding: 7px 12px;
+            font-size: 13px;
+            border: 1px solid rgba(248, 250, 252, 0.8);
+            background: transparent;
+            color: white;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .logout-btn:hover {
+            background: rgba(15, 23, 42, 0.35);
+        }
+
+        .main {
+            max-width: 1100px;
+            margin: 24px auto;
+            padding: 0 16px 32px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr);
+            gap: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 14px;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 14px 18px;
+            border-bottom: 1px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            background: #f9fafb;
+        }
+
+        .card-header h2 {
+            font-size: 15px;
+            font-weight: 600;
+            color: #0f172a;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .badge {
+            font-size: 11px;
+            padding: 3px 7px;
+            border-radius: 999px;
+            background: #e5e7eb;
+            color: #4b5563;
+        }
+
+        .card-body {
+            padding: 16px 18px 18px;
+            max-height: 520px;
+            overflow-y: auto;
+        }
+
+        .session-item {
+            border-radius: 10px;
+            border: 1px solid #e5e7eb;
+            padding: 12px 12px 10px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            transition: box-shadow 0.15s ease, transform 0.15s ease;
+        }
+
+        .session-item:hover {
+            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+            transform: translateY(-1px);
+        }
+
+        .session-main {
+            min-width: 0;
+        }
+
+        .session-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #111827;
+            margin-bottom: 2px;
+        }
+
+        .session-meta {
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        .session-meta span {
+            margin-right: 10px;
+        }
+
+        .status-pill {
+            font-size: 11px;
+            padding: 3px 7px;
+            border-radius: 999px;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .status-open {
+            background: #d1fae5;
+            color: #047857;
+        }
+
+        .status-complete {
+            background: #e5e7eb;
+            color: #4b5563;
+        }
+
+        .session-actions {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 6px;
+        }
+
+        .btn {
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 12px;
+            border: none;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: 500;
+        }
+
+        .btn-primary {
+            background: #111827;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #020617;
+        }
+
+        .btn-secondary {
+            background: #e5e7eb;
+            color: #111827;
+        }
+
+        .btn-secondary:hover {
+            background: #d1d5db;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 32px 12px;
+            color: #6b7280;
+            font-size: 14px;
+        }
+
+        .empty-state i {
+            font-size: 30px;
+            margin-bottom: 8px;
+            color: #9ca3af;
+        }
+
+        .form-group {
+            margin-bottom: 12px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #111827;
+            margin-bottom: 4px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 9px 10px;
+            border-radius: 9px;
+            border: 1px solid #d1d5db;
+            font-size: 13px;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #111827;
+            box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.3);
+        }
+
+        .helper-text {
+            font-size: 11px;
+            color: #6b7280;
+            margin-bottom: 8px;
+        }
+
+        .error-text {
+            font-size: 12px;
+            color: #b91c1c;
+            margin-top: 4px;
+            display: none;
+        }
+
+        .loading-inline {
+            font-size: 12px;
+            color: #6b7280;
+            display: none;
+            margin-top: 4px;
+        }
+
+        .loading-inline i {
+            animation: spin 1s linear infinite;
+            margin-right: 4px;
+        }
+
+        .divider {
+            height: 1px;
+            background: #e5e7eb;
+            margin: 10px 0 12px;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        @media (max-width: 900px) {
+            .grid {
+                grid-template-columns: minmax(0, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-content">
+            <div class="header-title">
+                <i class="fas fa-comments"></i>
+                <div>
+                    <h1>My Interview Dashboard</h1>
+                    <div class="header-sub">View and resume your expert interviews with Jamie</div>
+                </div>
+            </div>
+            <div class="header-actions">
+                <div class="user-pill" id="userInfo">
+                    <i class="fas fa-user"></i>
+                    <span id="userName">Loading...</span>
+                </div>
+                <button class="logout-btn" onclick="logout()">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <main class="main">
+        <div class="grid">
+            <section class="card">
+                <div class="card-header">
+                    <h2>
+                        <i class="fas fa-list"></i>
+                        Your interviews
+                    </h2>
+                    <span class="badge" id="sessionCount">0 total</span>
+                </div>
+                <div class="card-body" id="sessionsList">
+                    <div class="empty-state" id="sessionsEmpty">
+                        <i class="fas fa-clipboard-list"></i>
+                        <div>You don’t have any interviews yet. Start one on the right.</div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="card-header">
+                    <h2>
+                        <i class="fas fa-microphone"></i>
+                        Start a new interview
+                    </h2>
+                </div>
+                <div class="card-body">
+                    <p class="helper-text">
+                        Choose who you’re training and your expertise area. Your name and email are used from your account.
+                    </p>
+                    <div class="divider"></div>
+                    <div class="form-group">
+                        <label>Who are you training?</label>
+                        <select id="companionSlug" class="form-input">
+                            <option value="jamie">Jamie (our family assistant)</option>
+                            <option value="my_persona">My expert persona (train a model to act like you)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Expertise area</label>
+                        <input type="text" id="expertiseArea" class="form-input" placeholder="Child psychology, family therapy, etc." />
+                    </div>
+                    <button class="btn btn-primary" style="width: 100%; justify-content: center; margin-top: 4px;" onclick="startInterview()">
+                        <i class="fas fa-play"></i> Start interview
+                    </button>
+                    <div class="error-text" id="startError"></div>
+                    <div class="loading-inline" id="startLoading">
+                        <i class="fas fa-spinner"></i> Creating session...
+                    </div>
+                    <div class="divider" style="margin-top: 14px;"></div>
+                    <p class="helper-text">
+                        You can upload documents and continue the conversation after the interview starts.
+                    </p>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script>
+        async function init() {
+            const token = localStorage.getItem('user_token');
+            const name = localStorage.getItem('user_name');
+            const email = localStorage.getItem('user_email');
+
+            if (!token) {
+                window.location.replace('/');
+                return;
+            }
+
+            if (name) {
+                document.getElementById('userName').textContent = name;
+            }
+
+            await loadSessions();
+        }
+
+        async function loadSessions() {
+            const listEl = document.getElementById('sessionsList');
+            const emptyEl = document.getElementById('sessionsEmpty');
+            const countEl = document.getElementById('sessionCount');
+
+            emptyEl.style.display = 'block';
+            listEl.innerHTML = '';
+            listEl.appendChild(emptyEl);
+
+            const token = localStorage.getItem('user_token');
+            try {
+                const res = await fetch('/users/me/sessions', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!res.ok) {
+                    if (res.status === 401) {
+                        logout();
+                        return;
+                    }
+                    throw new Error('Failed to load sessions');
+                }
+                const data = await res.json();
+                const sessions = data.sessions || [];
+                countEl.textContent = `${sessions.length} total`;
+
+                if (sessions.length === 0) {
+                    emptyEl.style.display = 'block';
+                    listEl.innerHTML = '';
+                    listEl.appendChild(emptyEl);
+                    return;
+                }
+
+                emptyEl.style.display = 'none';
+                listEl.innerHTML = '';
+
+                sessions.forEach((s) => {
+                    const created = s.created_at ? new Date(s.created_at) : null;
+                    const createdLabel = created
+                        ? created.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                        : 'Unknown date';
+
+                    const statusClass = s.is_complete ? 'status-complete' : 'status-open';
+                    const statusLabel = s.is_complete ? 'Completed' : 'In progress';
+
+                    const el = document.createElement('div');
+                    el.className = 'session-item';
+                    el.innerHTML = `
+                        <div class="session-main">
+                            <div class="session-title">
+                                Session ${s.session_id}
+                            </div>
+                            <div class="session-meta">
+                                <span>${s.expertise_area || 'General'}</span>
+                                <span>• Started ${createdLabel}</span>
+                            </div>
+                        </div>
+                        <div class="session-actions">
+                            <span class="status-pill ${statusClass}">${statusLabel}</span>
+                            <button class="btn btn-secondary" onclick="resumeInterview('${s.session_id}')">
+                                <i class="fas fa-comments"></i> Open
+                            </button>
+                        </div>
+                    `;
+                    listEl.appendChild(el);
+                });
+            } catch (e) {
+                emptyEl.style.display = 'block';
+                emptyEl.innerHTML = `
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <div>Could not load your sessions. Please refresh the page.</div>
+                `;
+            }
+        }
+
+        function resumeInterview(sessionId) {
+            if (!sessionId) return;
+            window.location.href = `/interview?session_id=${encodeURIComponent(sessionId)}`;
+        }
+
+        async function startInterview() {
+            const token = localStorage.getItem('user_token');
+            const areaEl = document.getElementById('expertiseArea');
+            const companionEl = document.getElementById('companionSlug');
+            const errorEl = document.getElementById('startError');
+            const loadingEl = document.getElementById('startLoading');
+
+            const area = areaEl.value.trim() || 'General';
+            const companionSlug = (companionEl && companionEl.value) || 'jamie';
+
+            errorEl.style.display = 'none';
+            loadingEl.style.display = 'none';
+
+            if (!token) {
+                errorEl.textContent = 'Please log in again.';
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            try {
+                loadingEl.style.display = 'inline-flex';
+                const res = await fetch('/users/me/start_interview', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        expertise_area: area,
+                        companion_slug: companionSlug
+                    })
+                });
+
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.detail || 'Failed to start interview');
+                }
+
+                // Go straight into the interview chat
+                if (data.session_id) {
+                    window.location.href = `/interview?session_id=${encodeURIComponent(data.session_id)}`;
+                } else {
+                    throw new Error('Missing session ID from server');
+                }
+            } catch (e) {
+                errorEl.textContent = e.message || 'Error starting interview. Please try again.';
+                errorEl.style.display = 'block';
+            } finally {
+                loadingEl.style.display = 'none';
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('user_token');
+            localStorage.removeItem('user_email');
+            localStorage.removeItem('user_name');
+            window.location.replace('/');
+        }
+
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
+

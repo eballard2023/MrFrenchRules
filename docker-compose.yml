@@ -1,0 +1,22 @@
+# AI Coach Interview System (MrFrenchRules)
+# Usage: ensure .env exists with required vars, then:
+#   docker compose up -d
+#   docker compose up --build   # to rebuild image
+# Web app listens on APP_PORT (8000); "port" in .env is for Postgres only.
+#
+# When the app runs in Docker but Postgres is on the host (e.g. localhost:5432),
+# the container must use host.docker.internal to reach the host. We override
+# "host" here; uncomment and set DB_HOST if you use a different env var.
+services:
+  app:
+    build: .
+    image: mrfrenchrules:latest
+    container_name: mrfrenchrules
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    env_file: .env
+    environment:
+      - APP_PORT=8000
+      # Reach host Postgres from inside the container (Windows/Mac Docker Desktop)
+      - host=host.docker.internal
+    restart: unless-stopped

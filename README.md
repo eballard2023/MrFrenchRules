@@ -210,3 +210,38 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 ### Environment Variables
 Make sure to set `ENV=production` in your `.env` file for production deployment to disable debug logs and FastAPI docs.
+
+---
+
+## 🐳 Docker
+
+The app can run in a Docker container. External services (Supabase, ChromaDB Cloud, OpenAI) are used via env vars; no extra containers are required.
+
+### Build and run with Docker Compose
+
+1. Create a `.env` file in the project root with the same variables as in **Environment Setup** above (e.g. `OPENAI_API_KEY`, Supabase `host`/`dbname`/`user`/`password`/`port`, optional `CHROMA_*`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `JWT_SECRET_KEY`, `PORT`, etc.).
+
+2. From the project root:
+
+```bash
+# Build and start
+docker compose up -d
+
+# Or build and run in foreground (see logs)
+docker compose up --build
+```
+
+3. Open **http://localhost:8000** (or the port you set in `PORT`).
+
+### Build and run with Docker only
+
+```bash
+docker build -t mrfrenchrules:latest .
+docker run --env-file .env -p 8000:8000 mrfrenchrules:latest
+```
+
+### Notes
+
+- The image is large (~2GB+) because of PyTorch and sentence-transformers.
+- Do not commit `.env`; pass secrets via `--env-file` or Compose `env_file`.
+- For production, set `ENV=production` and a strong `JWT_SECRET_KEY` in `.env`.

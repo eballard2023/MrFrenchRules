@@ -3,32 +3,37 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
-import openai
 import os
-import json
 import tempfile
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime
 from dotenv import load_dotenv
-from typing import List, Dict, Optional
-import asyncio
+from typing import Optional
 # MongoDB removed - using Supabase + ChromaDB
 from supabase_client import supabase_client
 from admin_auth import admin_auth
+from user_auth import user_auth
 from jira_client import jira_client
 from document_processor import get_document_processor
 import logging
-
+from schemas import ExpertInfo, ChatMessage, AdminLoginRequest, UserRegisterRequest, UserLoginRequest, StartInterviewRequest
+from openai import AsyncOpenAI
+from interview_ai import (
+    SYSTEM_PROMPT,
+    sanitize_question,
+    clean_response,
+    is_smalltalk_or_project,
+    get_smalltalk_response,
+    build_system_prompt_with_context,
+    get_next_interview_reply,
+    extract_rules_from_conversation,
+)
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
-
-# Configure FastAPI docs exposure by environment
-is_prod = os.getenv("ENV", "development") == "production"
 
 app = FastAPI(
     title="AI Coach Interview Model",
@@ -61,7 +66,6 @@ async def _nested_redoc_redirect(_prefix: str):
     return RedirectResponse(url="/")
 
 # Set up OpenAI client
-from openai import AsyncOpenAI
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=15.0)
 if not os.getenv("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY environment variable is required")
@@ -80,154 +84,6 @@ templates = Jinja2Templates(directory="templates")
 
 session_counter = 0  # Will be initialized from DB to avoid conflicts
 
-# Helper: filter to keep only child/family behavior rules, drop meta/interview/project rules
-def is_behavior_rule(rule: Dict) -> bool:
-    try:
-        # Gather text from rule fields
-        text_parts: List[str] = []
-        if isinstance(rule, dict):
-            if_part = rule.get("if", {})
-            then_part = rule.get("then", {})
-            for part in (if_part, then_part, rule):
-                if isinstance(part, dict):
-                    for v in part.values():
-                        if isinstance(v, str):
-                            text_parts.append(v)
-                elif isinstance(part, str):
-                    text_parts.append(part)
-        full_text = " \n ".join(text_parts).lower()
-
-        # Hard filters for meta/interview/project chatter
-        meta_terms = [
-            "interview", "question", "script", "facilitate", "introduce yourself", "who is Jamie",
-            "who is timmy", "what is Jamie", "project context", "characters", "definition",
-            "i'm here to help", "let's dive right in", "area of expertise", "describe your expertise"
-        ]
-        if any(term in full_text for term in meta_terms):
-            return False
-
-        # Require presence of behavior/parenting/child-context cues
-        behavior_terms = [
-            "child", "kid", "parent", "family", "behavior", "behaviour", "routine", "task",
-            "reward", "consequence", "reinforcement", "positive", "timeout", "break",
-            "homework", "bedtime", "screen", "calm", "de-escalation", "encourage", "motivate",
-            "red zone", "green zone", "blue zone", "emotion", "frustrated", "angry", "upset",
-            "praise", "token", "sticker", "chore", "schedule", "reminder"
-        ]
-        return any(term in full_text for term in behavior_terms)
-    except Exception:
-        return False
-
-# Helper: sanitize AI question to remove numbering/bullets
-import re
-def sanitize_question(text: str) -> str:
-    try:
-        # Remove leading numbering or bullet patterns at the start of lines
-        lines = text.splitlines()
-        cleaned_lines = []
-        for line in lines:
-            cleaned = re.sub(r"^\s*(?:\(?\d+\)?[\).:-]\s+|[-*•]\s+)", "", line)
-            cleaned_lines.append(cleaned)
-        cleaned_text = "\n".join(cleaned_lines).strip()
-        return cleaned_text
-    except Exception:
-        return text
-
-# Helper: remove praise/evaluative phrases for neutral tone
-def neutralize_praise(text: str) -> str:
-    try:
-        phrases = [
-            r"\bthat's\s+great\b", r"\bgreat\b", r"\bexcellent\b", r"\blove\s+that\b",
-            r"\bawesome\b", r"\bperfect\b", r"\bwonderful\b", r"\bbrilliant\b",
-            r"\bthat's\s+exactly\s+right\b", r"\bwell\s+done\b", r"\bgood\s+job\b",
-            r"\bamazing\b", r"\bfantastic\b", r"\bimpressive\b", r"\bnice\b",
-            r"\bthank\s+you\s+for\s+sharing\b", r"\bappreciate\b"
-        ]
-        neutral = text
-        for p in phrases:
-            neutral = re.sub(p, "", neutral, flags=re.IGNORECASE)
-        # Collapse extra spaces created by removals
-        neutral = re.sub(r"\s{2,}", " ", neutral).strip()
-        return neutral if neutral else text
-    except Exception:
-        return text
-
-# Helper: detect small-talk or project questions
-def _matches_phrase(text: str, phrase: str) -> bool:
-    pattern = r"\b" + re.escape(phrase) + r"\b"
-    return re.search(pattern, text) is not None
-
-def _any_phrase(text: str, phrases: list[str]) -> bool:
-    return any(_matches_phrase(text, p) for p in phrases)
-
-def is_smalltalk_or_project(message: str) -> str:
-    m = (message or "").strip().lower()
-    if not m:
-        return "none"
-    greetings = ["hello", "hi", "hey"]
-    smalltalk = ["how are you", "how r u", "how are u", "how's it going"]
-    who_are_you = ["who are you", "who r u", "what are you"]
-    who_is_jamie = ["who is jamie", "what is jamie"]
-    who_is_timmy = ["who is timmy", "what is timmy"]
-    about_interview = [
-        "what is this about", "what is this interview about", "what is this interview", "what's this about",
-        "why am i here", "what will you ask", "purpose of this interview", "what is this for"
-    ]
-    if _any_phrase(m, greetings):
-        return "greeting"
-    if _any_phrase(m, smalltalk):
-        return "smalltalk"
-    if _any_phrase(m, who_are_you):
-        return "who_are_you"
-    if _any_phrase(m, who_is_jamie):
-        return "who_is_jamie"
-    if _any_phrase(m, who_is_timmy):
-        return "who_is_timmy"
-    if _any_phrase(m, about_interview):
-        return "about_interview"
-    return "none"
-
-# Helper: clean up any leading punctuation artifacts
-def clean_response(text: str) -> str:
-    try:
-        content = (text or "").strip()
-        # Remove leading punctuation marks that shouldn't be there
-        cleaned = re.sub(r"^[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>\/\s]+", "", content)
-        # Remove quotes around the entire text (straight or smart quotes)
-        cleaned = re.sub(r'^[""“”\'](.+)[""“”\']$', r"\1", cleaned)
-        return cleaned.strip() if cleaned else text
-    except Exception:
-        return text
-
-# Helper: extract only the first question from text
-def keep_only_first_question(text: str) -> str:
-    try:
-        content = (text or "").strip()
-        if not content:
-            return content
-        q_index = content.find("?")
-        if q_index == -1:
-            return content
-        # Walk backwards to previous sentence boundary
-        start = max(content.rfind(".", 0, q_index), content.rfind("!", 0, q_index), content.rfind("?", 0, q_index))
-        start = 0 if start == -1 else start + 1
-        question = content[start:q_index + 1].strip()
-        # Strip wrapping quotes
-        if (question.startswith('"') and question.endswith('"')) or (question.startswith("'") and question.endswith("'")):
-            question = question[1:-1].strip()
-        return question
-    except Exception:
-        return text
-
-# Helper: ensure acknowledgment for AI responses
-def ensure_acknowledgment(text: str, ack: str = "Understood.") -> str:
-    """Ensures the text ends with an acknowledgment if it doesn't already."""
-    if text.strip().endswith(ack):
-        return text
-    return f"{text} {ack}"
-
-
-FIRST_QUESTION_TEXT = "To start, could you describe your area of expertise and how you usually apply it?"
 
 @app.on_event("startup")
 async def startup_event():
@@ -271,152 +127,18 @@ async def shutdown_event():
     if hasattr(supabase_client, 'close'):
         supabase_client.close()
 
-class ChatMessage(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-
-class InterviewSession:
-    def __init__(self, session_id: str):
-        self.session_id = session_id
-        self.conversation_history = []
-        self.extracted_rules = []
-        self.current_question_index = 0
-        self.is_complete = False
-        self.created_at = datetime.now()
-        self.expert_name = "Unknown Expert"
-        self.expert_email = "unknown@example.com"
-        self.expertise_area = "General"
-        self.asked_questions = set()  # Track asked questions to prevent repetition
-
-# System prompt for the AI interviewer
-SYSTEM_PROMPT = """You are an AI interviewer designed to extract behavioral rules and best practices from subject matter experts (SMEs). These rules will be fed into Jamie AI to make it behave like an expert.
-
-**JAMIE PROJECT CONTEXT:**
-Jamie is a conversational AI that helps families manage children's routines, tasks, and behavior through three connected chat experiences:
-- Parent ↔ Jamie (task management, progress reports, zone updates, context discussions)
-- Timmy (child) ↔ Jamie (reminders, encouragement, task completion, "what's due" queries)
-- Parent ↔ Timmy (capturing real family instructions like "Timmy, do the dishes" into actionable tasks)
-
-Current Implementation - The Three Chats
-Jamie ties together three distinct but connected conversation types. Collections are stored in ChromaDB with metadata (role, sender, timestamp, group_id for family isolation).
-
-### 4.1 Parent ↔ Jamie (`parent-jamie`)
-- **Audience**: The Parent talking directly to Jamie
-- **Purpose**: Ask for summaries, add/update/delete tasks, change Timmy's zone when explicitly requested, receive progress reports, and discuss context
-- **Flow**: Parent sends a message → Jamie analyzes intent → Jamie replies to the Parent and may update tasks/zone and notify Timmy
-- **Storage**: Chroma collection `parent-jamie` with family isolation
-- **Authentication**: Required via session token
-
-### 4.2 Timmy ↔ Jamie (`timmy-jamie`)
-- **Audience**: Timmy talking directly to Jamie
-- **Purpose**: Ask "what's due," declare task completion, receive reminders, get encouragement, and learn about rewards
-- **Flow**: Timmy sends a message → Jamie analyzes intent (e.g., update completion) → Jamie replies and may notify the Parent
-- **Storage**: Chroma collection `timmy-jamie` with family isolation
-- **Authentication**: Required via session token
-
-### 4.3 Parent ↔ Timmy (`parent-timmy`)
-- **Audience**: Parent and Timmy talking to each other (human conversation), optionally AI-simulated
-- **Purpose**: Capture real family instructions like "Timmy, do the dishes," which should become actionable tasks. Optionally generate full AI conversations for testing or demos
-- **Flow**: Message is saved to `parent-timmy-realtime`, then Jamie's analyzer parses the latest turn and updates tasks when appropriate (e.g., direct commands to Timmy)
-- **Storage**: Chroma collection `parent-timmy-realtime` with family isolation. For AI-simulated exchanges, `ai-parent-timmy` is used
-- **Authentication**: Required via session token
-
-**CORE FUNCTIONALITIES:**
-- Converts everyday language into structured, trackable tasks with due dates/times and rewards
-- Maintains memory and context across multiple conversation threads using vector storage
-- Triggers reminders and updates automatically through scheduling
-- Keeps Parent informed and gently guides Timmy
-- Supports multiple families with secure authentication and data isolation
-- Collects comprehensive child information through guided onboarding
-
-**TIMMY ZONE SYSTEM:**
-- Red Zone: High stress, frustration, or emotional distress - requires calm, supportive responses
-- Green Zone: Normal, engaged state - can handle routine tasks and learning
-- Blue Zone: Low energy, tired, or disengaged - needs gentle encouragement and simple tasks
-
-**AREAS OF EXPERTISE NEEDED:**
-- Parental Communication Strategies
-- Child Task Management and Motivation
-- Behavioral Analysis and Response Patterns
-- Age-Appropriate Reward Systems
-- Routine Establishment and Maintenance
-- Crisis Management and De-escalation
-- Progress Measurement and Feedback
-- Family Dynamic Understanding
-- Task Intent Recognition from Natural Language
-- Cross-Chat Context Management
-
-**YOUR ROLE:**
-- You are an INTERVIEWER, not a general assistant
-- If the user greets (e.g., "how are you?"), reply briefly and warmly, then pivot to the interview
-- If asked "who are you?", reply: you are an AI interviewer to extract expert rules for Jamie, then ask if they're ready to continue
-- If asked about the Jamie project or Timmy, answer concisely from context, then ask if they're ready to continue
-- For unrelated general-knowledge/trivia (e.g., celebrities), politely say it's out of scope and steer back to the interview
-- Dont introduce yourself unless asked; keep responses concise and conversational
-- ALWAYS conduct the interview using the script below, one question at a time, listening to their views
-
-**INTERVIEW SCRIPT - Ask ONE question at a time, framed around Jamie:**
-
-**KICKOFF PHASE:**
-1. "To start, could you describe your area of expertise and how it could help Jamie better support families?"
-2. "What guiding principles or philosophies shape your approach to working with children and families?"
-3. "What outcomes do you try to help families achieve through your methods?"
-4. "How do you usually measure progress or success in family and child development?"
-
-**PROCESSES & METHODS:**
-5. "Can you walk me through the main steps or stages of your approach that Jamie could implement?"
-6. "Are there specific frameworks, routines, or tools you rely on that could help Jamie create better family routines?"
-7. "What common challenges do families face with children, and how do you recommend handling them?"
-8. "How do you adapt your methods for different ages, personalities, or family contexts?"
-
-**GUARDRAILS & BOUNDARIES:**
-9. "What should Jamie never do or say when supporting families?"
-10. "Are there disclaimers or boundaries that Jamie must always respect when helping with children?"
-11. "When should Jamie step back and suggest human involvement instead?"
-
-**TONE & STYLE:**
-12. "How should Jamie 'sound' when talking to children — more like a coach, a teacher, a friend, or something else?"
-13. "Are there certain words, metaphors, or examples you often use that Jamie could adopt?"
-14. "How should Jamie adjust its style for different ages, cultures, or learning levels?"
-
-**HANDLING VARIABILITY & EXCEPTIONS:**
-15. "What are the most frequent mistakes families make with children, and how should Jamie respond?"
-16. "If a child misunderstands or resists, how should Jamie handle it?"
-17. "When Jamie reaches its limit in helping a family, what's the right next step?"
-
-**KNOWLEDGE DEPTH & UPDATING:**
-18. "Which parts of your knowledge about child development are timeless, and which may change as research evolves?"
-19. "How should Jamie keep its knowledge about child development current over time?"
-20. "Are there sources or references you trust that Jamie should prioritize for family guidance?"
-
-**OPTIONAL DEEP DIVES:**
-21. "Could you share a typical family scenario that illustrates your approach?"
-22. "If Jamie could only carry one principle from your expertise, what should it be?"
-23. "What red flags should Jamie watch for that suggest a family situation needs immediate attention?"
-
-**INTERVIEW RULES:**
-- Ask ONLY ONE question at a time
-- Wait for their response before asking the next
-- Be conversational and natural
-- Start EVERY interview with Jamie introduction and purpose explanation
-- Ask if they want to know about current implementation and how they can help
-- Do NOT number or list questions; phrase naturally
-- Do NOT wrap questions in quotation marks; write conversationally without quotes
-- After small-talk or project questions (who are you / Jamie / Timmy), answer briefly and ask if they're ready to continue the interview
-- For unrelated trivia, decline and return to the interview
-- **CRITICAL**: On greeting ("hello", "hi"), reply with greeting and continue the interview dont give intro of jamie again and again tell him if he asks otherwise continue the interview
-- **NEVER** respond with "I'm here to help" or similar general assistant language
-- **RESPONSE STYLE**: Keep responses brief and neutral. Avoid praise or evaluative language (e.g., "great", "excellent", "love that", "that's exactly right"). After receiving an answer, give a short neutral acknowledgment (e.g., "Noted." or "Understood."). If the user asks a question at the end of their response (indicated by a question mark), acknowledge it briefly (e.g., "That dashboard concept could be valuable for families.") then proceed with the next interview question. Don't elaborate on their previous response unless they specifically ask for clarification.
-- **DOCUMENT AWARENESS**: When document context is provided below, reference it confidently and provide helpful summaries or insights based on the content. If asked about document contents, provide a clear summary rather than raw text. Always focus on the interview questions while incorporating relevant document insights when available.
-- **CRITICAL**: NEVER explain, analyze, judge, compliment, congratulate, or praise their previous answer. Just acknowledge briefly and ask the next question. If they ask a question, give a brief 1-sentence response then ask your next question. Keep total responses under 3 sentences.
-- **SCRIPT ADHERENCE**: While being responsive to their answers, ensure you cover the key areas from the interview script above. You can ask follow-up questions based on their responses, but make sure to eventually cover all the main topics: expertise/principles, outcomes/measurement, processes/methods, guardrails/boundaries, tone/style, handling variability, and knowledge depth.
-- **CRITICAL**: NEVER repeat questions that have already been asked in this session. Keep track of what has been covered and move to new topics. If a similar area needs exploration, ask from a different angle or focus on a different aspect.
-- **QUESTION TRACKING**: Before asking any question, consider what has already been discussed. Avoid asking about the same topic twice, even if phrased differently."""
 
 @app.get("/", response_class=HTMLResponse)
 async def get_start_page(request: Request):
-    """Serve the expert info collection page"""
-    logger.info("🏠 Start page requested")
+    """Serve the main user login/register page"""
+    logger.info("🏠 Root page requested - serving user login")
+    return templates.TemplateResponse("user_login.html", {"request": request})
+
+
+@app.get("/start-interview", response_class=HTMLResponse)
+async def get_start_interview_page(request: Request):
+    """Serve the legacy expert info collection page"""
+    logger.info("📄 Start interview page requested")
     return templates.TemplateResponse("start.html", {"request": request})
 
 @app.get("/interview", response_class=HTMLResponse)
@@ -424,6 +146,13 @@ async def get_interview_page(request: Request):
     """Serve the interview page"""
     logger.info("💬 Interview page requested")
     return templates.TemplateResponse("interview.html", {"request": request})
+
+
+@app.get("/user/dashboard", response_class=HTMLResponse)
+async def get_user_dashboard_page(request: Request):
+    """Serve the user interview dashboard (requires frontend token)"""
+    logger.info("📊 User dashboard page requested")
+    return templates.TemplateResponse("user_dashboard.html", {"request": request})
 
 @app.get("/health")
 async def health_check():
@@ -435,11 +164,6 @@ async def health_check():
         "database_connected": supabase_client.connected if supabase_client else False,
         "sessions_in_memory": 0
     }
-
-class ExpertInfo(BaseModel):
-    expert_name: str
-    expert_email: str
-    expertise_area: str = "General"
 
 @app.post("/start_interview_with_expert")
 async def start_interview_with_expert(expert_info: ExpertInfo):
@@ -459,18 +183,37 @@ async def start_interview_with_expert(expert_info: ExpertInfo):
             logger.error(f"❌ Supabase connection failed on session start: {e}")
         raise HTTPException(status_code=503, detail="Database not available")
     
-    await supabase_client.save_session(session_id, expert_info.expert_name, expert_info.expert_email, expert_info.expertise_area)
+    companion_id = None
+    if expert_info.companion_id is not None:
+        companion_id = expert_info.companion_id
+    elif expert_info.companion_slug:
+        c = supabase_client.get_companion_by_slug(expert_info.companion_slug)
+        if c:
+            companion_id = c["id"]
+    if companion_id is None:
+        jamie = supabase_client.get_companion_by_slug("jamie")
+        companion_id = jamie["id"] if jamie else None
+
+    await supabase_client.save_session(session_id, expert_info.expert_name, expert_info.expert_email, expert_info.expertise_area, companion_id=companion_id)
     
     # Using Supabase only for session storage
     print(f"💾 Using Supabase only for session {session_id}")
     
-    # Start with personalized greeting
-    ai_message = (
-        f"Hello {expert_info.expert_name}! Thank you for sharing your expertise in {expert_info.expertise_area}. "
-        "I'm here to interview you for training Jamie, our conversational AI family assistant. "
-        "Jamie helps families manage children's routines, tasks, and behavior. "
-        "To start, could you describe your area of expertise and how it could help Jamie better support families?"
-    )
+    # Greeting varies by target (Jamie vs user's persona)
+    is_persona = companion_id and (supabase_client.get_companion_by_slug("jamie") or {}).get("id") != companion_id
+    if is_persona:
+        ai_message = (
+            f"Hello {expert_info.expert_name}! Thank you for sharing your expertise in {expert_info.expertise_area}. "
+            "I'm here to interview you so we can train your own expert persona—a model that will act like you. "
+            "To start, could you describe your area of expertise and how you usually apply it?"
+        )
+    else:
+        ai_message = (
+            f"Hello {expert_info.expert_name}! Thank you for sharing your expertise in {expert_info.expertise_area}. "
+            "I'm here to interview you for training Jamie, our conversational AI family assistant. "
+            "Jamie helps families manage children's routines, tasks, and behavior. "
+            "To start, could you describe your area of expertise and how it could help Jamie better support families?"
+        )
     # Add AI message to database
     conversation_history = [{"role": "assistant", "content": ai_message}]
     try:
@@ -766,68 +509,25 @@ async def chat_with_interviewer(chat_message: ChatMessage):
     # Guard: handle small-talk or project Qs without advancing the question index
     msg_type = is_smalltalk_or_project(chat_message.message)
     if session_data['current_question_index'] == 0 and (msg_type in ["greeting", "smalltalk", "who_are_you", "who_is_jamie", "who_is_timmy", "about_interview"]):
-        if msg_type == "greeting":
-            # Start with Jamie introduction and ask about current implementation knowledge
-            ai_message = (
-                "Hi! I'm here to interview you about improving Jamie, our conversational AI family assistant. "
-                "Jamie helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
-                "This interview is to extract expert rules to make Jamie better at supporting families. "
-                "Would you like to know about our current implementation details and how you can help?"
-            )
-        elif msg_type == "smalltalk":
-            ai_message = (
-                "I'm good, thanks for asking! I'm here to interview you about improving Jamie, our conversational AI family assistant. "
-                "Jamie helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
-                "This interview is to extract expert rules to make Jamie better at supporting families. "
-                "Would you like to know about our current implementation details and how you can help?"
-            )
-        elif msg_type == "who_are_you":
-            ai_message = (
-                "I'm an AI interviewer to capture your expertise for improving Jamie, our conversational AI family assistant. "
-                "Jamie helps families manage children's routines, tasks, and behavior through connected chats between parents and children. "
-                "This interview is to extract expert rules to make Jamie better at supporting families. "
-                "Would you like to know about our current implementation details and how you can help?"
-            )
-        elif msg_type == "who_is_jamie":
-            ai_message = (
-                "Jamie is a conversational AI family assistant. It turns everyday parent instructions into structured tasks with due dates, reminders, and rewards. "
-                "There are three connected chats: Parent ↔ Jamie (to create/manage tasks and get progress), Timmy (child) ↔ Jamie (to receive reminders, encouragement, and complete tasks), and Parent ↔ Timmy (to capture real instructions). "
-                "It keeps context over time and uses a simple Red/Green/Blue 'Timmy Zone' to guide tone and responses. Would you like to know more about the current implementation details?"
-            )
-        elif msg_type == "who_is_timmy":
-            ai_message = (
-                "Timmy is the child persona that Jamie supports. Timmy receives friendly reminders, step-by-step help, encouragement, and simple rewards for completing tasks like homework, chores, and bedtime routines. "
-                "Jamie adjusts its tone using the Red/Green/Blue 'Timmy Zone' (e.g., calm guidance if Timmy is frustrated). Would you like to know more about the current implementation details?"
-            )
-        else:  # about_interview
-            ai_message = (
-                "In this interview, we'll discuss your expertise, guiding principles, outcomes you aim for, how you measure progress, methods you use, challenges you face, and more related to your area of expertise. "
-                "We capture your expertise so Jamie behaves like an expert in real family conversations. Would you like to know about our current implementation details first?"
-            )
-        conversation_history.append({"role": "assistant", "content": ai_message})
-        await supabase_client.update_session(session_id, conversation_history, 1, False)
-        return {
-            "message": sanitize_question(ai_message),
-            "question_number": 1,
-            "is_complete": False,
-            "auto_submitted": False,
-            "final_note": None
-        }
+        ai_message = get_smalltalk_response(msg_type)
+        if ai_message:
+            conversation_history.append({"role": "assistant", "content": ai_message})
+            await supabase_client.update_session(session_id, conversation_history, 1, False)
+            return {
+                "message": sanitize_question(ai_message),
+                "question_number": 1,
+                "is_complete": False,
+                "auto_submitted": False,
+                "final_note": None
+            }
     
     try:
-        # Create context about previously asked questions to prevent repetition
+        # Build previous-questions context for the AI
         previous_questions = []
         for msg in conversation_history:
             if msg['role'] == 'assistant' and '?' in msg['content']:
-                # Extract the question part
                 question_part = msg['content'].split('?')[0] + '?'
                 previous_questions.append(question_part)
-        
-        # Add context to system prompt about what's been asked
-        enhanced_system_prompt = SYSTEM_PROMPT
-        if previous_questions:
-            questions_context = "\n\nPREVIOUSLY ASKED QUESTIONS (DO NOT REPEAT):\n" + "\n".join([f"- {q}" for q in previous_questions[-5:]])  # Last 5 questions
-            enhanced_system_prompt += questions_context
         
         # Search for relevant document context using ChromaDB
         doc_context = ""
@@ -931,29 +631,13 @@ async def chat_with_interviewer(chat_message: ChatMessage):
                 print(f"❌ DOCUMENT SEARCH ERROR: {e}")
             pass
         
-        # Enhanced system prompt with document context
-        final_system_prompt = enhanced_system_prompt
-        if doc_context:
-            final_system_prompt += f"\n\n{doc_context}\n\nIMPORTANT: Only reference the document content provided above. Do not mention or reference any documents from previous sessions or conversations. If the expert asks about a document, only discuss the content from the documents listed above."
-            if os.getenv("ENV", "development") != "production":
-                print(f"📋 DOCUMENT CONTEXT ADDED TO PROMPT: {len(doc_context)} characters")
-        else:
-            if os.getenv("ENV", "development") != "production":
-                print("📋 NO DOCUMENT CONTEXT - AI should not reference any documents")
+        final_system_prompt = build_system_prompt_with_context(SYSTEM_PROMPT, previous_questions, doc_context)
+        if doc_context and os.getenv("ENV", "development") != "production":
+            print(f"📋 DOCUMENT CONTEXT ADDED TO PROMPT: {len(doc_context)} characters")
+        elif not doc_context and os.getenv("ENV", "development") != "production":
+            print("📋 NO DOCUMENT CONTEXT - AI should not reference any documents")
         
-        # Get AI's next question/response
-        messages = [{"role": "system", "content": final_system_prompt}] + conversation_history
-        
-        response = await client.chat.completions.create(
-            model="gpt-3.5-turbo",  # Faster for question generation
-            messages=messages,
-            max_tokens=1200,  # Increased for better comprehension and response quality
-            temperature=0.8,  # Slightly higher for more natural conversation
-            timeout=30.0  # Increased timeout for longer responses
-        )
-        
-        ai_message = sanitize_question(response.choices[0].message.content)
-        ai_message = clean_response(ai_message)
+        ai_message = await get_next_interview_reply(client, final_system_prompt, conversation_history)
         conversation_history.append({"role": "assistant", "content": ai_message})
         current_question_index = session_data['current_question_index'] + 1
         
@@ -1096,82 +780,7 @@ The expert also provided the following document(s): {', '.join(doc_titles)}
             print(f"⚠️ Could not include documents in rule extraction: {e}")
             document_context = ""
         
-        # Extract behavioral rules for Jamie
-        extraction_prompt = f"""You are analyzing an interview with a behavioral expert to extract specific rules for Jamie AI.
-
-**ABOUT JAMIE:**
-Jamie is a conversational AI family assistant that helps manage children's routines, tasks, and behavior. It has three chat modes:
-1. Parent ↔ Jamie (task management, progress reports)
-2. Child ↔ Jamie (reminders, encouragement, task completion)  
-3. Parent ↔ Child (capturing family instructions)
-
-Jamie uses a zone system: Red (frustrated/stressed), Green (normal), Blue (tired/low energy).
-
-**EXTRACTION RULES:**
-- CRITICAL: Extract rules from BOTH the conversation AND any provided document content
-- If documents are provided, they contain valuable expert knowledge that MUST be converted into rules
-- If the conversation is short but documents contain rich content, extract rules primarily from the documents
-- ONLY extract rules if the expert provided specific behavioral advice or recommendations (from conversation OR documents)
-- If neither conversation nor documents contain meaningful advice, return "NONE"
-- Ignore general interview questions and AI interviewer responses
-- Extract actionable rules Jamie can implement
-- Each rule should start with "Jamie should..."
-- Focus on child behavior management, communication strategies, and family dynamics
-- Ignore meta-conversation about the interview itself
-- DO NOT generate rules from your own knowledge - only from what the expert explicitly stated in conversation OR documents
-- Look for specific strategies, techniques, or guidelines in the documents
-- Convert document advice into "Jamie should..." format
-
-**EXAMPLES:**
-- "Jamie should use calm, reassuring language when a child is in the red zone"
-- "Jamie should break complex tasks into 2-3 smaller steps for better completion"
-- "Jamie should offer specific praise for effort rather than general compliments"
-
-**CONVERSATION:**
-{conversation_text}
-{document_context}
-
-**IMPORTANT:** If no actionable behavioral rules can be extracted from either the conversation or documents, respond with exactly "NONE". Do not create generic or made-up rules.
-
-**EXTRACTED RULES:"""
-        
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You extract simple task statements from behavioral expert interviews. Return only clear, actionable statements."},
-                {"role": "user", "content": extraction_prompt}
-            ],
-            max_tokens=1000,
-            temperature=0.3
-        )
-        
-        # Parse task statements
-        tasks_text = response.choices[0].message.content.strip()
-        if os.getenv("ENV", "development") != "production":
-            print(f"🤖 RAW EXTRACTION RESULT: {tasks_text}")
-        
-        if tasks_text.upper() == 'NONE' or not tasks_text or len(tasks_text.strip()) < 10:
-            task_statements = []
-        else:
-            # Split by lines and filter out empty/invalid entries
-            raw_tasks = [task.strip() for task in tasks_text.split('\n') if task.strip()]
-            task_statements = []
-            
-            for task in raw_tasks:
-                # Skip if it's just "NONE" or similar
-                if task.upper() in ['NONE', 'NO RULES', 'NO BEHAVIORAL RULES', 'N/A']:
-                    continue
-                # Skip if it's too short to be meaningful
-                if len(task) < 20:
-                    continue
-                # Skip if it doesn't contain behavioral content
-                if not any(term in task.lower() for term in ['child', 'parent', 'family', 'behavior', 'task', 'routine', 'jamie']):
-                    continue
-                task_statements.append(task)
-            
-            if os.getenv("ENV", "development") != "production":
-                print(f"✅ FILTERED RULES: {len(task_statements)} valid rules extracted from {len(raw_tasks)} raw lines")
-        
+        task_statements = await extract_rules_from_conversation(client, conversation_text, document_context)
         if os.getenv("ENV", "development") != "production":
             print(f"🤖 TASK EXTRACTION: Starting for session {session_id}")
             print(f"📝 CONVERSATION LENGTH: {len(conversation_text)} characters")
@@ -1198,7 +807,8 @@ Jamie uses a zone system: Red (frustrated/stressed), Green (normal), Blue (tired
                     session_id=session_id,
                     expert_name=session_data['expert_name'],
                     expertise_area=session_data['expertise_area'],
-                    rule_text=task
+                    rule_text=task,
+                    companion_id=session_data.get('companion_id')
                 )
                 if os.getenv("ENV", "development") != "production":
                     print(f"💾 RULE SAVED: ID {rule_id} for session {session_id}")
@@ -1221,31 +831,6 @@ Jamie uses a zone system: Red (frustrated/stressed), Green (normal), Blue (tired
             "status": "error"
         }
 
-# Removed auto_submit_interview - now using submit_interview directly
-
-# Removed background processing - now using direct task extraction in submit_interview
-
-@app.get("/sessions")
-async def get_sessions():
-    """Get all interview sessions from memory"""
-    try:
-        return {
-            "sessions": [
-                {
-                    "session_id": session_id,
-                    "created_at": session.created_at.isoformat(),
-                    "questions_asked": session.current_question_index,
-                    "is_complete": session.is_complete,
-                    "status": "in_progress" if not session.is_complete else "completed",
-                    "completed_at": None,
-                    "source": "memory"
-                }
-                for session_id, session in interview_sessions.items()
-            ]
-        }
-    except Exception as e:
-        logger.error(f"Error getting sessions: {e}")
-        raise HTTPException(status_code=500, detail=f"Error retrieving sessions: {str(e)}")
 
 @app.get("/session/{session_id}/conversation")
 async def get_conversation(session_id: str):
@@ -1426,16 +1011,8 @@ async def get_processing_status(session_id: str):
         logger.error(f"Error checking processing status: {e}")
         return {"status": "error", "message": str(e)}
 
-# Admin Authentication Models
-class AdminLoginRequest(BaseModel):
-    email: str
-    password: str
 
-class TaskActionRequest(BaseModel):
-    task_id: str
-    action: str  # "approve" or "reject"
-
-# Security dependency
+# Security dependency (used for both admin and regular users)
 security = HTTPBearer()
 
 def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -1447,6 +1024,133 @@ def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(securi
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     print(f"✅ AUTH SUCCESS: User {user['email']}")
     return user
+
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify regular user token"""
+    user = user_auth.verify_token(credentials.credentials)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired user token")
+    return user
+
+
+# ----- Public user authentication routes (non-admin) -----
+
+@app.post("/users/register")
+async def register_user(request: UserRegisterRequest):
+    """
+    Register (or update) a regular user account.
+    Returns a JWT token and basic user info on success.
+    """
+    result = user_auth.register(request.email, request.password, request.name)
+    if not result:
+        raise HTTPException(status_code=400, detail="Unable to register user")
+    return result
+
+
+@app.post("/users/login")
+async def login_user(request: UserLoginRequest):
+    """
+    Login endpoint for non-admin users.
+    Returns a JWT token and basic user info on success.
+    """
+    result = user_auth.authenticate(request.email, request.password)
+    if not result:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return result
+
+
+@app.get("/users/me/sessions")
+async def get_my_sessions(current_user=Depends(get_current_user)):
+    """
+    Get all interview sessions that belong to the logged-in user.
+    A session is considered owned by a user if its expert_email matches the user's email.
+    """
+    if not supabase_client.connected:
+        raise HTTPException(status_code=503, detail="Database not connected")
+
+    try:
+        all_sessions = await supabase_client.get_all_sessions()
+        user_email = current_user["email"]
+        user_sessions = [
+            session
+            for session in all_sessions
+            if session.get("expert_email") == user_email
+        ]
+        return {
+            "sessions": user_sessions,
+            "total": len(user_sessions),
+        }
+    except Exception as e:
+        logger.error(f"Error getting user sessions: {e}")
+        raise HTTPException(status_code=500, detail="Error retrieving user sessions")
+
+
+@app.get("/users/me/companions")
+async def get_my_companions(current_user=Depends(get_current_user)):
+    """List companions this user can train: Jamie (product) + My expert persona."""
+    if not supabase_client.connected:
+        raise HTTPException(status_code=503, detail="Database not connected")
+    companions = supabase_client.list_companions_for_user(current_user["id"])
+    # Ensure "My expert persona" is always an option (id=None until first use)
+    has_persona = any(c.get("type") == "user_persona" for c in companions)
+    if not has_persona:
+        companions.append({"id": None, "name": "My expert persona", "slug": "my_persona", "type": "user_persona", "user_id": current_user["id"]})
+    return {"companions": companions}
+
+
+@app.post("/users/me/start_interview")
+async def start_my_interview(body: StartInterviewRequest, current_user=Depends(get_current_user)):
+    """Start an interview as the logged-in user. Uses user's name/email; target is Jamie or their persona."""
+    if not supabase_client.connected:
+        raise HTTPException(status_code=503, detail="Database not available")
+    global session_counter
+    session_id = str(session_counter)
+    session_counter += 1
+
+    companion_id = None
+    if body.companion_slug == "my_persona":
+        persona = supabase_client.get_or_create_user_persona(
+            current_user["id"],
+            current_user.get("name") or "Expert",
+            expertise_area=body.expertise_area or "General",
+        )
+        if not persona:
+            raise HTTPException(status_code=500, detail="Could not create or load your expert persona")
+        companion_id = persona["id"]
+    else:
+        c = supabase_client.get_companion_by_slug(body.companion_slug or "jamie")
+        if c:
+            companion_id = c["id"]
+    if companion_id is None:
+        jamie = supabase_client.get_companion_by_slug("jamie")
+        companion_id = jamie["id"] if jamie else None
+
+    expert_name = current_user.get("name") or "Expert"
+    expert_email = current_user["email"]
+    await supabase_client.save_session(session_id, expert_name, expert_email, body.expertise_area or "General", companion_id=companion_id)
+
+    is_persona = body.companion_slug == "my_persona"
+    if is_persona:
+        ai_message = (
+            f"Hello {expert_name}! Thank you for sharing your expertise in {body.expertise_area or 'General'}. "
+            "I'm here to interview you so we can train your own expert persona—a model that will act like you. "
+            "To start, could you describe your area of expertise and how you usually apply it?"
+        )
+    else:
+        ai_message = (
+            f"Hello {expert_name}! Thank you for sharing your expertise in {body.expertise_area or 'General'}. "
+            "I'm here to interview you for training Jamie, our conversational AI family assistant. "
+            "Jamie helps families manage children's routines, tasks, and behavior. "
+            "To start, could you describe your area of expertise and how it could help Jamie better support families?"
+        )
+    conversation_history = [{"role": "assistant", "content": ai_message}]
+    try:
+        await supabase_client.update_session(session_id, conversation_history, 0, False)
+    except Exception as e:
+        logger.error(f"Failed to save initial message: {e}")
+    return {"session_id": session_id, "message": ai_message, "question_number": 0}
+
 
 # Admin Routes
 @app.get("/admin", response_class=HTMLResponse)
@@ -1506,26 +1210,38 @@ async def get_admin_conversations(current_admin = Depends(get_current_admin)):
         logger.error(f"Error getting admin conversations: {e}")
         return {"conversations": []}
 
+@app.get("/admin/companions")
+async def get_admin_companions(current_admin=Depends(get_current_admin)):
+    """List all companions (for admin filter/grouping)."""
+    if not supabase_client.connected:
+        return {"companions": []}
+    companions = supabase_client.get_all_companions()
+    return {"companions": companions}
+
+
 @app.get("/admin/tasks")
-async def get_admin_tasks(current_admin = Depends(get_current_admin)):
-    """Get all tasks for admin panel"""
+async def get_admin_tasks(companion_id: Optional[int] = None, current_admin=Depends(get_current_admin)):
+    """Get all tasks for admin panel. Optional companion_id to filter. Returns tasks, companions, and tasks grouped by companion."""
     try:
         if not supabase_client.connected:
-            return {"tasks": []}
+            return {"tasks": [], "companions": [], "tasks_by_companion": {}}
         
+        companions = supabase_client.get_all_companions()
+        companion_map = {c["id"]: c["name"] for c in companions}
+        companion_map[None] = "Unassigned"
+
         db_rules = await supabase_client.get_all_rules()
+        if companion_id is not None:
+            db_rules = [r for r in db_rules if r.get("companion_id") == companion_id]
+
         tasks = []
-        print("*"*50)
-        print("db_rules")
-        print(db_rules)
-        print("*"*50)
         for rule in db_rules:
             completed = rule.get('completed', False)
             status = "completed" if completed else "pending"
-            
+            cid = rule.get('companion_id')
+            cname = companion_map.get(cid, "Unassigned")
             raw_rule_text = rule.get('rule_text')
             rule_text = str(raw_rule_text) if raw_rule_text else "No rule text available"
-            
             tasks.append({
                 "id": str(rule['id']),
                 "session_id": str(rule['session_id']),
@@ -1533,72 +1249,22 @@ async def get_admin_tasks(current_admin = Depends(get_current_admin)):
                 "task_text": rule_text,
                 "category": str(rule.get('expertise_area', 'General')),
                 "priority": "medium",
-                "status": status
+                "status": status,
+                "companion_id": cid,
+                "companion_name": cname
             })
-        
+
         tasks.sort(key=lambda x: (x['status'] == 'completed', x['id']))
-        return {"tasks": tasks}
-        
+        tasks_by_companion = {}
+        for t in tasks:
+            name = t["companion_name"]
+            if name not in tasks_by_companion:
+                tasks_by_companion[name] = []
+            tasks_by_companion[name].append(t)
+        return {"tasks": tasks, "companions": companions, "tasks_by_companion": tasks_by_companion}
     except Exception as e:
         logger.error(f"Error getting admin tasks: {e}")
-        return {"tasks": []}
-
-@app.post("/admin/tasks/action")
-async def admin_task_action(action_request: TaskActionRequest, current_admin = Depends(get_current_admin)):
-    """Approve or reject a task"""
-    try:
-        task_id = action_request.task_id
-        action = action_request.action
-        
-        if action == "approve":
-            # Get rule from Supabase
-            if supabase_client.connected:
-                rules = await supabase_client.get_all_rules()
-                rule = next((r for r in rules if str(r['id']) == task_id), None)
-                
-                if rule:
-                    task_data = {
-                        "task_text": rule['rule_text'],
-                        "expert_name": rule.get('expert_name', 'Expert User'),
-                        "category": rule.get('expertise_area', 'General'),
-                        "priority": "medium"
-                    }
-                    
-                    # Send to Jira
-                    jira_issue_key = jira_client.create_task(
-                        summary_text=f"AI Coach Rule: {task_data['task_text'][:100]}...",
-                        description=f"Expert: {task_data['expert_name']}\nCategory: {task_data['category']}\nRule: {task_data['task_text']}"
-                    )
-                    
-                    # Mark rule as completed in Supabase
-                    async with supabase_client.pool.acquire() as conn:
-                        await conn.execute(
-                            "UPDATE interview_rules SET completed = TRUE WHERE id = $1",
-                            rule['id']
-                        )
-                    
-                    return {
-                        "success": True,
-                        "message": "Rule approved and sent to Jira",
-                        "jira_issue_key": jira_issue_key
-                    }
-                else:
-                    raise HTTPException(status_code=404, detail="Rule not found")
-            else:
-                raise HTTPException(status_code=503, detail="Database not available")
-            
-        elif action == "reject":
-            # For now, just return success (no status update needed in simplified schema)
-            return {
-                "success": True,
-                "message": "Rule rejected"
-            }
-        else:
-            raise HTTPException(status_code=400, detail="Invalid action")
-            
-    except Exception as e:
-        logger.error(f"Error processing task action: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"tasks": [], "companions": [], "tasks_by_companion": {}}
 
 @app.post("/admin/approve/{task_id}")
 async def approve_task(task_id: str, current_admin = Depends(get_current_admin)):
@@ -1696,11 +1362,11 @@ async def get_admin_stats(current_admin = Depends(get_current_admin)):
 
 if __name__ == "__main__":
     import uvicorn
+    # Use APP_PORT so it doesn't conflict with DB "port" (e.g. port=5432 in .env)
+    port = int(os.getenv("APP_PORT") or os.getenv("PORT", "8000"))
     if os.getenv("ENV", "development") != "production":
         print("🚀 Starting AI Coach Interview System...")
-        port = int(os.getenv("PORT", 8003))
         print(f"🌐 Binding to: 0.0.0.0:{port}")
         print(f"🔗 Interview Interface: http://localhost:{port}")
         print(f"🔗 Admin Panel: http://localhost:{port}/admin")
-    port = int(os.getenv("PORT", 8003))
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

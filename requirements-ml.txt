@@ -1,7 +1,0 @@
-# ML / Vector database support
-sentence-transformers==2.2.2
-chromadb==0.4.22
-
-# Torch + deps (pin version to avoid re-downloads)
-torch==2.1.2
-transformers==4.56.1

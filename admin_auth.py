@@ -3,31 +3,21 @@ Admin Authentication Module
 Simple authentication system for admin panel
 """
 
-import hashlib
-import secrets
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 import jwt
 import os
 from supabase_client import supabase_client
 
+
 class AdminAuth:
     def __init__(self):
-        # JWT secret key - require env in production
         env = os.getenv("ENV", "development")
         self.jwt_secret = os.getenv("JWT_SECRET_KEY") or ("dev-insecure-jwt" if env != "production" else None)
         if not self.jwt_secret:
             raise RuntimeError("JWT_SECRET_KEY must be set in production")
         self.token_expiry_hours = 24
-    
-    def _hash_password(self, password: str) -> str:
-        """Hash password with salt from env in production."""
-        env = os.getenv("ENV", "development")
-        salt = os.getenv("PASSWORD_SALT") or ("dev-insecure-salt" if env != "production" else None)
-        if not salt:
-            raise RuntimeError("PASSWORD_SALT must be set in production")
-        return hashlib.sha256((password + salt).encode()).hexdigest()
-    
+
     def authenticate(self, email: str, password: str) -> Optional[Dict]:
         """Authenticate admin user against database"""
         # Avoid logging sensitive data in production
@@ -38,18 +28,16 @@ class AdminAuth:
         user_data = supabase_client.authenticate_admin(email, password)
         
         if user_data:
-            # Generate JWT token
             token = self._generate_token(user_data["email"], user_data["name"])
-            if os.getenv("ENV", "production") == "production":
+            if os.getenv("ENV", "development") != "production":
                 print(f"✅ AUTH: Generated token for {email}")
-                return {
+            return {
                 "token": token,
                 "user": user_data
-                }
-        
-            if os.getenv("ENV", "production") == "production":
-                print(f"❌ AUTH: Failed for {email}")
-                return None
+            }
+        if os.getenv("ENV", "development") != "production":
+            print(f"❌ AUTH: Failed for {email}")
+        return None
     
     def _generate_token(self, email: str, name: str) -> str:
         """Generate JWT token"""

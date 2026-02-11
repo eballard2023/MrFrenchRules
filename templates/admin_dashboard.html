@@ -112,6 +112,16 @@
             background: #f8fafc;
             padding: 20px 25px;
             border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .panel-header-actions {
+            display: flex;
+            align-items: center;
         }
 
         .panel-header h2 {
@@ -469,6 +479,12 @@
                         <i class="fas fa-tasks"></i>
                         Suggested Tasks
                     </h2>
+                    <div class="panel-header-actions">
+                        <label for="companionFilter" style="margin-right: 8px;">Companion:</label>
+                        <select id="companionFilter" onchange="onCompanionFilterChange()" style="padding: 6px 10px; border-radius: 6px; border: 1px solid #e2e8f0;">
+                            <option value="">All</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="panel-content" id="tasksPanel">
                     <div class="loading">
@@ -492,6 +508,8 @@
     <script>
         let conversations = [];
         let tasks = [];
+        let companions = [];
+        let tasksByCompanion = {};
 
         // Prevent browser back button access
         window.addEventListener('load', function() {
@@ -601,7 +619,10 @@
         async function loadTasks() {
             try {
                 const token = localStorage.getItem('admin_token');
-                const response = await fetch('/admin/tasks', {
+                const filterEl = document.getElementById('companionFilter');
+                const companionId = (filterEl && filterEl.value) ? filterEl.value : '';
+                const url = companionId ? `/admin/tasks?companion_id=${encodeURIComponent(companionId)}` : '/admin/tasks';
+                const response = await fetch(url, {
                     headers: {
                         'Authorization': `Bearer ${token}`
                     }
@@ -609,9 +630,14 @@
                 
                 if (response.ok) {
                     const data = await response.json();
-                    tasks = data.tasks;
+                    tasks = data.tasks || [];
+                    companions = data.companions || [];
+                    tasksByCompanion = data.tasks_by_companion || {};
+                    populateCompanionFilter();
                 } else {
                     tasks = [];
+                    companions = [];
+                    tasksByCompanion = {};
                 }
                 
                 renderTasks();
@@ -620,6 +646,28 @@
                 document.getElementById('tasksPanel').innerHTML = 
                     '<div class="empty-state"><i class="fas fa-exclamation-triangle"></i><p>Error loading tasks</p></div>';
             }
+        }
+
+        function populateCompanionFilter() {
+            const filterEl = document.getElementById('companionFilter');
+            if (!filterEl) return;
+            const current = filterEl.value;
+            filterEl.innerHTML = '<option value="">All</option>';
+            companions.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.id;
+                let label = c.name || '';
+                if (label) {
+                    label = label.charAt(0).toUpperCase() + label.slice(1);
+                }
+                opt.textContent = label + (c.type === 'user_persona' ? ' (user persona)' : '');
+                if (String(c.id) === String(current)) opt.selected = true;
+                filterEl.appendChild(opt);
+            });
+        }
+
+        function onCompanionFilterChange() {
+            loadTasks();
         }
 
         async function loadStats() {
@@ -685,20 +733,14 @@
             panel.innerHTML = html;
         }
 
-        function renderTasks() {
-            const panel = document.getElementById('tasksPanel');
-            
-            if (tasks.length === 0) {
-                panel.innerHTML = '<div class="empty-state"><i class="fas fa-tasks"></i><p>No tasks found</p></div>';
-                return;
-            }
-
-            const html = tasks.map(task => `
+        function renderTaskItem(task) {
+            const companionLabel = task.companion_name ? ` • ${task.companion_name}` : '';
+            return `
                 <div class="task-item">
                     <div class="task-text">${task.task_text}</div>
                     <div class="task-meta">
                         <div class="task-info">
-                            <strong>${task.expert_name}</strong> • ${task.category} • Session ${task.session_id}
+                            <strong>${task.expert_name}</strong> • ${task.category} • Session ${task.session_id}${companionLabel}
                         </div>
                         <span class="status-badge status-${task.status}">${task.status}</span>
                     </div>
@@ -713,9 +755,41 @@
                         </div>
                     ` : ''}
                 </div>
-            `).join('');
+            `;
+        }
+
+        function renderTasks() {
+            const panel = document.getElementById('tasksPanel');
+            const filterEl = document.getElementById('companionFilter');
+            const filterActive = filterEl && filterEl.value;
+
+            if (tasks.length === 0 && (!tasksByCompanion || Object.keys(tasksByCompanion).length === 0)) {
+                panel.innerHTML = '<div class="empty-state"><i class="fas fa-tasks"></i><p>No tasks found</p></div>';
+                return;
+            }
+
+            let html = '';
+            if (filterActive) {
+                html = tasks.map(renderTaskItem).join('');
+            } else if (tasksByCompanion && Object.keys(tasksByCompanion).length > 0) {
+                Object.keys(tasksByCompanion).sort().forEach(companionName => {
+                    const list = tasksByCompanion[companionName] || [];
+                    if (list.length === 0) return;
+                    html += `<div class="task-group" style="margin-bottom: 16px;"><div class="task-group-title" style="font-weight: 600; color: #4a5568; margin-bottom: 8px; font-size: 14px;">${escapeHtml(companionName)}</div>`;
+                    html += list.map(renderTaskItem).join('');
+                    html += '</div>';
+                });
+            } else {
+                html = tasks.map(renderTaskItem).join('');
+            }
 
             panel.innerHTML = html;
+        }
+
+        function escapeHtml(s) {
+            const div = document.createElement('div');
+            div.textContent = s;
+            return div.innerHTML;
         }
 
         function toggleConversation(sessionId) {

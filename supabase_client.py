@@ -2,9 +2,9 @@ import psycopg2
 import psycopg2.extensions
 from psycopg2 import pool
 import os
-import socket
+import re
 import json
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from dotenv import load_dotenv
 import time
 import asyncio
@@ -139,6 +139,18 @@ class SupabaseClient:
                         is_active BOOLEAN DEFAULT TRUE
                     );
                 """)
+
+                # Create general application users table (for non-admin experts)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS app_users (
+                        id SERIAL PRIMARY KEY,
+                        email VARCHAR(255) UNIQUE NOT NULL,
+                        password_hash VARCHAR(255) NOT NULL,
+                        name VARCHAR(255) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        is_active BOOLEAN DEFAULT TRUE
+                    );
+                """)
                 
                 # Create sessions table
                 cur.execute("""
@@ -167,6 +179,24 @@ class SupabaseClient:
                         expert_email VARCHAR(255)
                     );
                 """)
+
+                # Companions: product (e.g. Jamie) or user persona (train yourself)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS companions (
+                        id SERIAL PRIMARY KEY,
+                        name VARCHAR(255) NOT NULL,
+                        slug VARCHAR(100) UNIQUE NOT NULL,
+                        type VARCHAR(50) NOT NULL,
+                        user_id INTEGER REFERENCES app_users(id) ON DELETE CASCADE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                cur.execute("""
+                    INSERT INTO companions (name, slug, type) VALUES ('Jamie', 'jamie', 'product')
+                    ON CONFLICT (slug) DO NOTHING;
+                """)
+                cur.execute("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS companion_id INTEGER REFERENCES companions(id);")
+                cur.execute("ALTER TABLE interview_rules ADD COLUMN IF NOT EXISTS companion_id INTEGER REFERENCES companions(id);")
                 
                 # Create or update admin user from env if provided
                 import bcrypt
@@ -196,7 +226,7 @@ class SupabaseClient:
             if conn:
                 self.connection_pool.putconn(conn)
     
-    def insert_rule(self, session_id: str, expert_name: str, expertise_area: str, rule_text: str, expert_email: str = None):
+    def insert_rule(self, session_id: str, expert_name: str, expertise_area: str, rule_text: str, expert_email: str = None, companion_id: Optional[int] = None):
         """Inserts a new rule into the interview_rules table."""
         if not self.connected:
             self.connect()
@@ -209,11 +239,11 @@ class SupabaseClient:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO interview_rules (session_id, expert_name, expertise_area, rule_text)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO interview_rules (session_id, expert_name, expertise_area, rule_text, expert_email, companion_id)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     RETURNING id;
                     """,
-                    (session_id, expert_name, expertise_area, rule_text)
+                    (session_id, expert_name, expertise_area, rule_text, expert_email, companion_id)
                 )
                 rule_id = cur.fetchone()[0]
                 conn.commit()
@@ -223,103 +253,6 @@ class SupabaseClient:
             if 'conn' in locals():
                 conn.rollback()
             return None
-        finally:
-            if 'conn' in locals():
-                self.connection_pool.putconn(conn)
-    
-    def get_rule_by_session_id(self, session_id: str):
-        """Retrieves a rule by its session_id."""
-        print(f"🔍 DB GET: Looking for rule with session_id {session_id}")
-        
-        if not self.connected:
-            print("🔄 DB RECONNECT: Reconnecting to database")
-            self.connect()
-        
-        if not self.connected:
-            print("❌ DB GET FAILED: No database connection")
-            return None
-            
-        try:
-            conn = self.connection_pool.getconn()
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT * FROM interview_rules WHERE session_id = %s LIMIT 1;
-                    """,
-                    (session_id,)
-                )
-                row = cur.fetchone()
-                if row:
-                    print(f"✅ DB GET SUCCESS: Found rule for session {session_id}")
-                    return row
-                else:
-                    print(f"⚠️ DB GET: No rule found for session {session_id}")
-                return None
-        except (Exception, psycopg2.DatabaseError) as error:
-            print(f"❌ DB GET ERROR: {error}")
-            return None
-        finally:
-            if 'conn' in locals():
-                self.connection_pool.putconn(conn)
-    
-    def get_all_rules(self):
-        """Retrieves all rules from the database."""
-        print("🔍 DB SELECT: Getting all rules")
-        
-        if not self.connected:
-            self.connect()
-        
-        if not self.connected:
-            print("❌ DB SELECT FAILED: No database connection")
-            return []
-            
-        try:
-            conn = self.connection_pool.getconn()
-            with conn.cursor() as cur:
-                cur.execute("SELECT * FROM interview_rules ORDER BY created_at DESC;")
-                rows = cur.fetchall()
-                print(f"✅ DB SELECT SUCCESS: Found {len(rows)} rules")
-                return rows
-        except (Exception, psycopg2.DatabaseError) as error:
-            print(f"❌ DB SELECT ERROR: {error}")
-            return []
-        finally:
-            if 'conn' in locals():
-                self.connection_pool.putconn(conn)
-    
-    def update_rule_status(self, session_id: str, completed: bool):
-        """Updates the completed status of a rule by session_id."""
-        print(f"🔄 DB UPDATE: Setting session {session_id} completed = {completed}")
-        
-        if not self.connected:
-            print("🔄 DB RECONNECT: Reconnecting to database")
-            self.connect()
-        
-        if not self.connected:
-            print("❌ DB UPDATE FAILED: No database connection")
-            return False
-            
-        try:
-            conn = self.connection_pool.getconn()
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE interview_rules SET completed = %s WHERE session_id = %s;
-                    """,
-                    (completed, session_id)
-                )
-                conn.commit()
-                updated = cur.rowcount > 0
-                if updated:
-                    print(f"✅ DB UPDATE SUCCESS: {cur.rowcount} rows updated")
-                else:
-                    print("⚠️ DB UPDATE: No rows matched the session_id")
-                return updated
-        except (Exception, psycopg2.DatabaseError) as error:
-            print(f"❌ DB UPDATE ERROR: {error}")
-            if 'conn' in locals():
-                conn.rollback()
-            return False
         finally:
             if 'conn' in locals():
                 self.connection_pool.putconn(conn)
@@ -361,9 +294,9 @@ class SupabaseClient:
             if 'conn' in locals():
                 self.connection_pool.putconn(conn)
     
-    async def save_interview_rule(self, session_id: str, expert_name: str, expertise_area: str, rule_text: str, expert_email: str = None):
+    async def save_interview_rule(self, session_id: str, expert_name: str, expertise_area: str, rule_text: str, expert_email: str = None, companion_id: Optional[int] = None):
         """Save interview rule to database."""
-        return self.insert_rule(session_id, expert_name, expertise_area, rule_text)
+        return self.insert_rule(session_id, expert_name, expertise_area, rule_text, expert_email, companion_id)
     
     async def get_all_rules(self):
         """Get all rules from database."""
@@ -378,6 +311,7 @@ class SupabaseClient:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM interview_rules ORDER BY created_at DESC;")
                 rows = cur.fetchall()
+                print(f"✅ DB SELECT SUCCESS: Found {len(rows)} rules")
                 return [{
                     'id': row[0],
                     'session_id': row[1], 
@@ -386,7 +320,8 @@ class SupabaseClient:
                     'rule_text': row[4],  # Corrected: rule_text is column 4
                     'completed': row[5],  # Corrected: completed is column 5
                     'created_at': row[6],
-                    'expert_email': row[7] if len(row) > 7 else None
+                    'expert_email': row[7] if len(row) > 7 else None,
+                    'companion_id': row[8] if len(row) > 8 else None
                 } for row in rows]
         except Exception as e:
             print(f"❌ Error getting all rules: {e}")
@@ -432,8 +367,8 @@ class SupabaseClient:
             if 'conn' in locals():
                 self.connection_pool.putconn(conn)
     
-    async def save_session(self, session_id: str, expert_name: str, expert_email: str, expertise_area: str):
-        """Save session to database"""
+    async def save_session(self, session_id: str, expert_name: str, expert_email: str, expertise_area: str, companion_id: Optional[int] = None):
+        """Save session to database. companion_id: which AI companion/persona this interview trains."""
         if not self.connected:
             self.connect()
         
@@ -443,13 +378,14 @@ class SupabaseClient:
             conn = self.connection_pool.getconn()
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO interview_sessions (session_id, expert_name, expert_email, expertise_area)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO interview_sessions (session_id, expert_name, expert_email, expertise_area, companion_id)
+                    VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (session_id) DO UPDATE SET
                     expert_name = EXCLUDED.expert_name,
                     expert_email = EXCLUDED.expert_email,
-                    expertise_area = EXCLUDED.expertise_area;
-                """, (session_id, expert_name, expert_email, expertise_area))
+                    expertise_area = EXCLUDED.expertise_area,
+                    companion_id = EXCLUDED.companion_id;
+                """, (session_id, expert_name, expert_email, expertise_area, companion_id))
                 conn.commit()
                 return True
         except Exception as e:
@@ -513,7 +449,8 @@ class SupabaseClient:
                         'conversation_history': row[4] or [],
                         'current_question_index': row[5] or 0,
                         'is_complete': row[6] or False,
-                        'created_at': row[7]
+                        'created_at': row[7],
+                        'companion_id': row[8] if len(row) > 8 else None
                     }
                 return None
                 
@@ -548,7 +485,8 @@ class SupabaseClient:
                     'conversation_history': row[4] or [],
                     'current_question_index': row[5] or 0,
                     'is_complete': row[6] or False,
-                    'created_at': row[7]
+                    'created_at': row[7],
+                    'companion_id': row[8] if len(row) > 8 else None
                 } for row in rows]
         except Exception as e:
             print(f"❌ Error getting all sessions: {e}")
@@ -576,56 +514,119 @@ class SupabaseClient:
         finally:
             if 'conn' in locals():
                 self.connection_pool.putconn(conn)
-    
-    async def get_stats(self):
-        """Get dashboard statistics."""
-        print("📊 ASYNC STATS: Getting dashboard statistics")
-        
+
+    def get_companion_by_slug(self, slug: str) -> Optional[Dict]:
+        """Get companion by slug (e.g. 'jamie', 'user_123')."""
         if not self.connected:
             self.connect()
-        
         if not self.connected:
-            print("❌ ASYNC STATS FAILED: No database connection")
-            return {
-                "total_interviews": 0,
-                "pending_tasks": 0,
-                "approved_tasks": 0,
-                "rejected_tasks": 0
-            }
+            return None
+        conn = None
         try:
             conn = self.connection_pool.getconn()
             with conn.cursor() as cur:
-                # Get total interviews (unique sessions)
-                cur.execute("SELECT COUNT(DISTINCT session_id) FROM interview_rules;")
-                total_interviews = cur.fetchone()[0] or 0
-                
-                # Get pending tasks
-                cur.execute("SELECT COUNT(*) FROM interview_rules WHERE completed = FALSE;")
-                pending_tasks = cur.fetchone()[0] or 0
-                
-                # Get approved tasks
-                cur.execute("SELECT COUNT(*) FROM interview_rules WHERE completed = TRUE;")
-                approved_tasks = cur.fetchone()[0] or 0
-                
-                stats = {
-                    "total_interviews": total_interviews,
-                    "pending_tasks": pending_tasks,
-                    "approved_tasks": approved_tasks,
-                    "rejected_tasks": 0  # Not tracking rejected separately
-                }
-                
-                print(f"✅ ASYNC STATS SUCCESS: {stats}")
-                return stats
+                cur.execute(
+                    "SELECT id, name, slug, type, user_id, created_at FROM companions WHERE slug = %s;",
+                    (slug,)
+                )
+                row = cur.fetchone()
+                if row:
+                    return {"id": row[0], "name": row[1], "slug": row[2], "type": row[3], "user_id": row[4], "created_at": row[5]}
+                return None
         except Exception as e:
-            print(f"❌ ASYNC STATS ERROR: {e}")
-            return {
-                "total_interviews": 0,
-                "pending_tasks": 0,
-                "approved_tasks": 0,
-                "rejected_tasks": 0
-            }
+            print(f"❌ get_companion_by_slug: {e}")
+            return None
         finally:
-            if 'conn' in locals():
+            if conn:
+                self.connection_pool.putconn(conn)
+
+    def _slug_from_expertise(self, expertise_area: str) -> str:
+        """Sanitize expertise area into a slug suffix (lowercase, alphanumeric + underscores, max 80 chars)."""
+        if not expertise_area or not str(expertise_area).strip():
+            return "general"
+        s = re.sub(r"[^a-z0-9]+", "_", str(expertise_area).lower().strip()).strip("_")
+        return s[:80] if s else "general"
+
+    def get_or_create_user_persona(
+        self, user_id: int, user_name: str, expertise_area: Optional[str] = None
+    ) -> Optional[Dict]:
+        """Get or create a user persona for this user and expertise area. One persona per (user, expertise)."""
+        if not self.connected:
+            self.connect()
+        if not self.connected:
+            return None
+        expertise = (expertise_area or "").strip() or "General"
+        suffix = self._slug_from_expertise(expertise)
+        slug = f"user_{user_id}_{suffix}"
+        display_name = f"{user_name} - {expertise}" if user_name else f"User {user_id} - {expertise}"
+        conn = None
+        try:
+            conn = self.connection_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name, slug, type, user_id, created_at FROM companions WHERE slug = %s;",
+                    (slug,)
+                )
+                row = cur.fetchone()
+                if row:
+                    return {"id": row[0], "name": row[1], "slug": row[2], "type": row[3], "user_id": row[4], "created_at": row[5]}
+                cur.execute(
+                    "INSERT INTO companions (name, slug, type, user_id) VALUES (%s, %s, 'user_persona', %s) RETURNING id, name, slug, type, user_id, created_at;",
+                    (display_name, slug, user_id)
+                )
+                r = cur.fetchone()
+                conn.commit()
+                return {"id": r[0], "name": r[1], "slug": r[2], "type": r[3], "user_id": r[4], "created_at": r[5]}
+        except Exception as e:
+            print(f"❌ get_or_create_user_persona: {e}")
+            if conn:
+                conn.rollback()
+            return None
+        finally:
+            if conn:
+                self.connection_pool.putconn(conn)
+
+    def list_companions_for_user(self, user_id: Optional[int]) -> List[Dict]:
+        """List companions available for this user: Jamie (product) + their persona if logged in."""
+        if not self.connected:
+            self.connect()
+        if not self.connected:
+            return []
+        conn = None
+        try:
+            conn = self.connection_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name, slug, type, user_id FROM companions WHERE type = 'product' OR user_id = %s ORDER BY type, id;",
+                    (user_id,)
+                )
+                rows = cur.fetchall()
+                return [{"id": r[0], "name": r[1], "slug": r[2], "type": r[3], "user_id": r[4]} for r in rows]
+        except Exception as e:
+            print(f"❌ list_companions_for_user: {e}")
+            return []
+        finally:
+            if conn:
+                self.connection_pool.putconn(conn)
+
+    def get_all_companions(self) -> List[Dict]:
+        """List all companions (for admin)."""
+        if not self.connected:
+            self.connect()
+        if not self.connected:
+            return []
+        conn = None
+        try:
+            conn = self.connection_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, name, slug, type, user_id FROM companions ORDER BY type, id;")
+                rows = cur.fetchall()
+                return [{"id": r[0], "name": r[1], "slug": r[2], "type": r[3], "user_id": r[4]} for r in rows]
+        except Exception as e:
+            print(f"❌ get_all_companions: {e}")
+            return []
+        finally:
+            if conn:
                 self.connection_pool.putconn(conn)
     
     def authenticate_admin(self, email: str, password: str):
@@ -675,10 +676,15 @@ class SupabaseClient:
                 self.connection_pool.putconn(conn)
     
     def close(self):
-        """Close the database connection."""
-        if self.connection:
-            self.connection.close()
-            print("🔌 Database connection closed.")
+        """Close the connection pool."""
+        if self.connection_pool:
+            try:
+                self.connection_pool.closeall()
+                print("🔌 Database connection pool closed.")
+            except Exception:
+                pass
+            self.connection_pool = None
+            self.connected = False
 
 
 # Global Supabase client instance

@@ -9,11 +9,16 @@ import shutil
 from datetime import datetime
 from dotenv import load_dotenv
 from typing import Optional
+from pydantic import BaseModel
 # MongoDB removed - using Supabase + ChromaDB
 from supabase_client import supabase_client
-from admin_auth import admin_auth
+# ... imports ...
 from user_auth import user_auth
 from jira_client import jira_client
+# admin_auth import removed
+
+# ... (other imports) ...
+
 from document_processor import get_document_processor
 import logging
 from schemas import ExpertInfo, ChatMessage, AdminLoginRequest, UserRegisterRequest, UserLoginRequest, StartInterviewRequest
@@ -1012,52 +1017,65 @@ async def get_processing_status(session_id: str):
         return {"status": "error", "message": str(e)}
 
 
-# Security dependency (used for both admin and regular users)
+# Security dependency (unified)
 security = HTTPBearer()
 
 def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify admin token"""
-    print(f"🔐 AUTH CHECK: Received token: {credentials.credentials[:20]}...")
-    user = admin_auth.verify_token(credentials.credentials)
+    """Verify admin token and role"""
+    user = user_auth.verify_token(credentials.credentials)
     if not user:
-        print("❌ AUTH FAILED: Invalid or expired token")
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    print(f"✅ AUTH SUCCESS: User {user['email']}")
+    
+    if user.get("role") != "admin":
+        print(f"❌ AUTH FAILED: User {user.get('email')} is not an admin (role={user.get('role')})")
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+        
     return user
 
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify regular user token"""
+    """Verify user token (any valid role used for user access)"""
     user = user_auth.verify_token(credentials.credentials)
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired user token")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
     return user
 
 
 # ----- Public user authentication routes (non-admin) -----
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+@app.post("/auth/login")
+async def login(request: LoginRequest):
+    """
+    Unified login endpoint for Users and Admins.
+    Returns token, user info, and role.
+    """
+    # Authenticate against unified users table
+    result = user_auth.authenticate(request.email, request.password)
+    if not result:
+        # Avoid revealing if user exists or password is wrong
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    logger.info(f"✅ Login success: {request.email} (Role: {result['user']['role']})")
+    return result
+
 @app.post("/users/register")
 async def register_user(request: UserRegisterRequest):
     """
-    Register (or update) a regular user account.
-    Returns a JWT token and basic user info on success.
+    Register a new user (default role='user').
     """
     result = user_auth.register(request.email, request.password, request.name)
     if not result:
         raise HTTPException(status_code=400, detail="Unable to register user")
     return result
 
-
 @app.post("/users/login")
-async def login_user(request: UserLoginRequest):
-    """
-    Login endpoint for non-admin users.
-    Returns a JWT token and basic user info on success.
-    """
-    result = user_auth.authenticate(request.email, request.password)
-    if not result:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return result
+async def login_user_legacy(request: UserLoginRequest):
+    """Legacy user login -> Redirects logic to unified auth"""
+    return await login(LoginRequest(email=request.email, password=request.password))
 
 
 @app.get("/users/me/sessions")
@@ -1161,17 +1179,13 @@ async def admin_login_page(request: Request):
 # Removed insecure manual admin creation endpoint for production security
 
 @app.post("/admin/login")
-async def admin_login(login_request: AdminLoginRequest):
-    """Admin login endpoint"""
-    logger.info(f"Admin login attempt for: {login_request.email}")
-    
-    auth_result = admin_auth.authenticate(login_request.email, login_request.password)
-    if not auth_result:
-        logger.warning(f"Failed login attempt for: {login_request.email}")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    logger.info(f"Successful login for: {login_request.email}")
-    return auth_result
+async def admin_login_legacy(login_request: AdminLoginRequest):
+    """Legacy admin login -> Redirects logic to unified auth"""
+    result = await login(LoginRequest(email=login_request.email, password=login_request.password))
+    # Verify it is an admin
+    if result["user"]["role"] != "admin":
+         raise HTTPException(status_code=403, detail="Not an admin account")
+    return result
 
 @app.get("/admin/dashboard", response_class=HTMLResponse)
 async def admin_dashboard(request: Request):

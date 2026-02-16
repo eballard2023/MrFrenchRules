@@ -123,36 +123,70 @@ class SupabaseClient:
             print(f"⚠️ Error returning connection to pool: {e}")
     
     def _create_admin_table(self):
-        """Create admin_users table and insert default admin"""
+        """Create users table and manage schema migrations"""
         conn = None
         try:
             conn = self.connection_pool.getconn()
             with conn.cursor() as cur:
-                # Create admin table
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS admin_users (
-                        id SERIAL PRIMARY KEY,
-                        email VARCHAR(255) UNIQUE NOT NULL,
-                        password_hash VARCHAR(255) NOT NULL,
-                        name VARCHAR(255) NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        is_active BOOLEAN DEFAULT TRUE
-                    );
-                """)
+                # 1. DATABASE MIGRATION: Rename app_users to users if it exists
+                try:
+                    cur.execute("SELECT to_regclass('public.app_users');")
+                    if cur.fetchone()[0]:
+                        print("🔄 MIGRATION: Renaming app_users to users...")
+                        cur.execute("ALTER TABLE app_users RENAME TO users;")
+                except Exception as e:
+                    print(f"⚠️ Migration warning (rename): {e}")
+                    conn.rollback()
 
-                # Create general application users table (for non-admin experts)
+                # 2. SCHEMA SETUP: Create users table if it doesn't exist
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS app_users (
+                    CREATE TABLE IF NOT EXISTS users (
                         id SERIAL PRIMARY KEY,
                         email VARCHAR(255) UNIQUE NOT NULL,
                         password_hash VARCHAR(255) NOT NULL,
                         name VARCHAR(255) NOT NULL,
+                        role VARCHAR(50) DEFAULT 'user',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         is_active BOOLEAN DEFAULT TRUE
                     );
                 """)
                 
-                # Create sessions table
+                # Check if role column exists (for existing tables)
+                try:
+                    cur.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='users' AND column_name='role';
+                    """)
+                    if not cur.fetchone():
+                        print("🔄 MIGRATION: Adding role column to users table...")
+                        cur.execute("ALTER TABLE users ADD COLUMN role VARCHAR(50) DEFAULT 'user';")
+                except Exception as e:
+                    print(f"⚠️ Migration warning (add column): {e}")
+
+                # 3. MIGRATION: Copy admin_users to users
+                try:
+                    cur.execute("SELECT to_regclass('public.admin_users');")
+                    if cur.fetchone()[0]:
+                        print("🔄 MIGRATION: Migrating admin_users to users table...")
+                        # Copy admins who aren't already in users table
+                        cur.execute("""
+                            INSERT INTO users (email, password_hash, name, role, created_at, is_active)
+                            SELECT email, password_hash, name, 'admin', created_at, is_active
+                            FROM admin_users
+                            ON CONFLICT (email) DO UPDATE SET
+                                role = 'admin',
+                                name = EXCLUDED.name,
+                                password_hash = EXCLUDED.password_hash;
+                        """)
+                        # Optional: Drop old table or keep for backup?
+                        # cur.execute("DROP TABLE admin_users;") 
+                        print("✅ Admin users migrated.")
+                except Exception as e:
+                    print(f"⚠️ Migration warning (admin copy): {e}")
+                    conn.rollback()
+
+                # 4. TABLES: Create sessions table
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS interview_sessions (
                         session_id VARCHAR(50) PRIMARY KEY,
@@ -166,7 +200,7 @@ class SupabaseClient:
                     );
                 """)
                 
-                # Create interview_rules table with proper defaults
+                # 5. TABLES: Create interview_rules table
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS interview_rules (
                         id SERIAL PRIMARY KEY,
@@ -180,46 +214,51 @@ class SupabaseClient:
                     );
                 """)
 
-                # Companions: product (e.g. Jamie) or user persona (train yourself)
+                # 6. TABLES: Create companions table
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS companions (
                         id SERIAL PRIMARY KEY,
                         name VARCHAR(255) NOT NULL,
                         slug VARCHAR(100) UNIQUE NOT NULL,
                         type VARCHAR(50) NOT NULL,
-                        user_id INTEGER REFERENCES app_users(id) ON DELETE CASCADE,
+                        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
+                
+                # Default Companion
                 cur.execute("""
                     INSERT INTO companions (name, slug, type) VALUES ('Jamie', 'jamie', 'product')
                     ON CONFLICT (slug) DO NOTHING;
                 """)
-                cur.execute("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS companion_id INTEGER REFERENCES companions(id);")
-                cur.execute("ALTER TABLE interview_rules ADD COLUMN IF NOT EXISTS companion_id INTEGER REFERENCES companions(id);")
                 
-                # Create or update admin user from env if provided
+                # Add Foreign Keys if missing
+                try:
+                    cur.execute("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS companion_id INTEGER REFERENCES companions(id);")
+                    cur.execute("ALTER TABLE interview_rules ADD COLUMN IF NOT EXISTS companion_id INTEGER REFERENCES companions(id);")
+                except Exception:
+                    pass
+                
+                # 7. SEEDING: Create or update admin user from env
                 import bcrypt
                 admin_email = os.getenv("ADMIN_EMAIL")
                 admin_password = os.getenv("ADMIN_PASSWORD")
                 if admin_email and admin_password:
                     password_hash = bcrypt.hashpw(admin_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                     cur.execute("""
-                        INSERT INTO admin_users (email, password_hash, name)
-                        VALUES (%s, %s, %s)
+                        INSERT INTO users (email, password_hash, name, role)
+                        VALUES (%s, %s, %s, 'admin')
                         ON CONFLICT (email) DO UPDATE SET
-                        password_hash = EXCLUDED.password_hash,
-                        name = EXCLUDED.name
-                    """, (admin_email, password_hash, "Admin User"))
+                            role = 'admin',
+                            password_hash = EXCLUDED.password_hash
+                    """, (admin_email, password_hash, "System Admin"))
                     if os.getenv("ENV", "development") != "production":
-                        print(f"✅ Admin user created/updated for {admin_email}")
-                else:
-                    print("ℹ️ Skipping default admin creation; set ADMIN_EMAIL and ADMIN_PASSWORD to enable.")
+                        print(f"✅ Admin user seeded: {admin_email}")
+                
                 conn.commit()
                 
-                
         except Exception as e:
-            print(f"❌ Error creating admin table: {e}")
+            print(f"❌ Error initializing database schema: {e}")
             if conn:
                 conn.rollback()
         finally:

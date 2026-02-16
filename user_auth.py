@@ -22,29 +22,28 @@ class UserAuth:
             raise RuntimeError("JWT_SECRET_KEY must be set in production")
         self.token_expiry_hours = 24
 
-    def _generate_token(self, user_id: int, email: str, name: str) -> str:
-        """Generate JWT token for regular (non-admin) users."""
+    def _generate_token(self, user_id: int, email: str, name: str, role: str) -> str:
+        """Generate JWT token with role."""
         payload = {
             "sub": user_id,
             "email": email,
             "name": name,
-            "type": "user",
+            "role": role,
             "exp": datetime.utcnow() + timedelta(hours=self.token_expiry_hours),
             "iat": datetime.utcnow(),
         }
         return jwt.encode(payload, self.jwt_secret, algorithm="HS256")
 
     def verify_token(self, token: str) -> Optional[Dict]:
-        """Verify JWT token and return user info if valid."""
+        """Verify JWT token and return user info including role."""
         try:
             payload = jwt.decode(token, self.jwt_secret, algorithms=["HS256"])
-            # Only accept tokens issued for regular users
-            if payload.get("type") != "user":
-                return None
+            # Return standardized user object
             return {
-                "id": payload["sub"],
-                "email": payload["email"],
-                "name": payload["name"],
+                "id": payload.get("sub"),
+                "email": payload.get("email"),
+                "name": payload.get("name"),
+                "role": payload.get("role", "user")
             }
         except jwt.ExpiredSignatureError:
             return None
@@ -53,10 +52,8 @@ class UserAuth:
 
     def register(self, email: str, password: str, name: str) -> Optional[Dict]:
         """
-        Create or update a regular user.
-        For now, if the email already exists, we update the password and name.
+        Create or update a regular user (default role='user').
         """
-        # Ensure database connection
         if not supabase_client.connected:
             supabase_client.connect()
         if not supabase_client.connected:
@@ -67,15 +64,16 @@ class UserAuth:
             password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
             conn = supabase_client.get_connection()
             with conn.cursor() as cur:
+                # Default role is 'user' for public registration
                 cur.execute(
                     """
-                    INSERT INTO app_users (email, password_hash, name)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO users (email, password_hash, name, role)
+                    VALUES (%s, %s, %s, 'user')
                     ON CONFLICT (email) DO UPDATE SET
                         password_hash = EXCLUDED.password_hash,
                         name = EXCLUDED.name,
                         is_active = TRUE
-                    RETURNING id, email, name, created_at;
+                    RETURNING id, email, name, role, created_at;
                     """,
                     (email, password_hash, name),
                 )
@@ -86,15 +84,17 @@ class UserAuth:
                     "id": row[0],
                     "email": row[1],
                     "name": row[2],
-                    "created_at": row[3],
+                    "role": row[3],
+                    "created_at": row[4],
                 }
-                token = self._generate_token(user_data["id"], user_data["email"], user_data["name"])
+                token = self._generate_token(user_data["id"], user_data["email"], user_data["name"], user_data["role"])
                 return {
                     "token": token,
                     "user": {
                         "id": user_data["id"],
                         "email": user_data["email"],
                         "name": user_data["name"],
+                        "role": user_data["role"]
                     },
                 }
         except Exception as e:
@@ -108,7 +108,7 @@ class UserAuth:
                 supabase_client.put_connection(conn)
 
     def authenticate(self, email: str, password: str) -> Optional[Dict]:
-        """Authenticate regular user against app_users table."""
+        """Authenticate user against users table (unified auth)."""
         if not supabase_client.connected:
             supabase_client.connect()
         if not supabase_client.connected:
@@ -120,8 +120,8 @@ class UserAuth:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, password_hash, name
-                    FROM app_users
+                    SELECT id, password_hash, name, role
+                    FROM users
                     WHERE email = %s AND is_active = TRUE;
                     """,
                     (email,),
@@ -131,31 +131,34 @@ class UserAuth:
                 if not row:
                     return None
 
-                user_id, stored_hash, name = row
+                user_id, stored_hash, name, role = row
                 if not stored_hash:
                     return None
 
                 if not bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8")):
                     return None
 
-                token = self._generate_token(user_id, email, name)
+                token = self._generate_token(user_id, email, name, role)
                 return {
                     "token": token,
                     "user": {
                         "id": user_id,
                         "email": email,
                         "name": name,
+                        "role": role
                     },
                 }
         except Exception as e:
             if os.getenv("ENV", "development") != "production":
-                print(f"❌ USER AUTH ERROR: {e}")
+                print(f"❌ AUTH ERROR: {e}")
             return None
         finally:
             if conn:
                 supabase_client.put_connection(conn)
 
 
-# Global user auth instance
+# Global auth instance
+# basic aliasing for now, will replace usage in main.py
 user_auth = UserAuth()
+auth_service = user_auth
 

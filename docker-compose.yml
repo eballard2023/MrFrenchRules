@@ -17,6 +17,7 @@ services:
     env_file: .env
     environment:
       - APP_PORT=8000
-      # Reach host Postgres from inside the container (Windows/Mac Docker Desktop)
-      - host=host.docker.internal
+      # Only override host if Postgres runs on the Docker host (localhost).
+      # For external databases (e.g. AWS RDS), let the .env value pass through.
+      # - host=host.docker.internal
     restart: unless-stopped

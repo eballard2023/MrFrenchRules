@@ -1,32 +1,50 @@
-name: Deploy MrFrenchRules
+name: Build & Deploy to Cloud Run
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [interview-revamp, main]
+
+env:
+  GAR_LOCATION: us-central1
+  GAR_REPO: mrfrenchrules
+  IMAGE_NAME: mrfrenchrules
+  CLOUD_RUN_SERVICE: interview-api
+  CLOUD_RUN_REGION: us-central1
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: production
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
         with:
-          host: ${{ vars.EC2_HOST }}
-          username: ${{ vars.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            set -xe
-            cd /home/ec2-user/MrFrenchRules
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
 
-            git fetch origin
-            git reset --hard origin/main
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
-            pip3 install -r requirements.txt --user
-            sudo systemctl restart mrfrench
-            sudo systemctl status mrfrench --no-pager -l
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet
+
+      - name: Build and push Docker image
+        run: |
+          IMAGE="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.GAR_REPO }}/${{ env.IMAGE_NAME }}"
+          docker build -t "${IMAGE}:${{ github.sha }}" -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${{ github.sha }}"
+          docker push "${IMAGE}:latest"
+
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.CLOUD_RUN_SERVICE }}
+          region: ${{ env.CLOUD_RUN_REGION }}
+          image: ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.GAR_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}

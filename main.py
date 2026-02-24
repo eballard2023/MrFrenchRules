@@ -89,6 +89,28 @@ templates = Jinja2Templates(directory="templates")
 
 session_counter = 0  # Will be initialized from DB to avoid conflicts
 
+security = HTTPBearer()
+
+def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify admin token and role"""
+    user = user_auth.verify_token(credentials.credentials)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+    if user.get("role") != "admin":
+        print(f"❌ AUTH FAILED: User {user.get('email')} is not an admin (role={user.get('role')})")
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+        
+    return user
+
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify user token (any valid role used for user access)"""
+    user = user_auth.verify_token(credentials.credentials)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return user
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -686,7 +708,7 @@ async def chat_with_interviewer(chat_message: ChatMessage):
 # Removed old JSON rule generation - now using simple task extraction in submit_interview
 
 @app.post("/submit_interview/{session_id}")
-async def submit_interview(session_id: str):
+async def submit_interview(session_id: str, companion_id: Optional[int] = None, current_user: dict = Depends(get_current_user)):
     """Finalize interview: store in ChromaDB, extract tasks, save to Supabase"""
     logger.info(f"🔍 Submit interview called for session_id: {session_id}")
     
@@ -808,12 +830,18 @@ The expert also provided the following document(s): {', '.join(doc_titles)}
             for i, task in enumerate(task_statements, 1):
                 if os.getenv("ENV", "development") != "production":
                     print(f"💾 SAVING TASK {i}/{len(task_statements)}: {task[:50]}...")
+                    print(f"💾 TASK META: email={session_data.get('expert_email')}, companion_id={session_data.get('companion_id')}")
+                # Use passed companion_id OR the one from session_data
+                final_companion_id = companion_id if companion_id is not None else session_data.get('companion_id')
+                
                 rule_id = await supabase_client.save_interview_rule(
                     session_id=session_id,
                     expert_name=session_data['expert_name'],
                     expertise_area=session_data['expertise_area'],
                     rule_text=task,
-                    companion_id=session_data.get('companion_id')
+                    expert_email=session_data.get('expert_email'),
+                    companion_id=final_companion_id,
+                    user_id=current_user.get('id')
                 )
                 if os.getenv("ENV", "development") != "production":
                     print(f"💾 RULE SAVED: ID {rule_id} for session {session_id}")
@@ -852,6 +880,7 @@ async def get_conversation(session_id: str):
                     "session_id": session_id,
                     "conversation": db_session.get('conversation_history', []),
                     "is_complete": db_session.get('is_complete', False),
+                    "companion_id": db_session.get('companion_id'),
                     "source": "database"
                 }
             else:
@@ -1018,28 +1047,6 @@ async def get_processing_status(session_id: str):
 
 
 # Security dependency (unified)
-security = HTTPBearer()
-
-def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify admin token and role"""
-    user = user_auth.verify_token(credentials.credentials)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    
-    if user.get("role") != "admin":
-        print(f"❌ AUTH FAILED: User {user.get('email')} is not an admin (role={user.get('role')})")
-        raise HTTPException(status_code=403, detail="Admin privileges required")
-        
-    return user
-
-
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify user token (any valid role used for user access)"""
-    user = user_auth.verify_token(credentials.credentials)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return user
-
 
 # ----- Public user authentication routes (non-admin) -----
 
@@ -1090,18 +1097,176 @@ async def get_my_sessions(current_user=Depends(get_current_user)):
     try:
         all_sessions = await supabase_client.get_all_sessions()
         user_email = current_user["email"]
-        user_sessions = [
-            session
-            for session in all_sessions
-            if session.get("expert_email") == user_email
-        ]
+        
+        conversations = []
+        for session in all_sessions:
+            if session.get("expert_email") == user_email:
+                messages = session.get('conversation_history', [])
+                if messages: # Only show sessions with messages
+                    conversations.append({
+                        "session_id": session['session_id'],
+                        "expert_name": session.get('expert_name', 'Expert'),
+                        "expertise_area": session.get('expertise_area', 'General'),
+                        "completed": session.get('is_complete', False),
+                        "messages": messages,
+                        "companion_id": session.get("companion_id")
+                    })
+        
         return {
-            "sessions": user_sessions,
-            "total": len(user_sessions),
+            "sessions": conversations,
+            "total": len(conversations),
         }
     except Exception as e:
         logger.error(f"Error getting user sessions: {e}")
         raise HTTPException(status_code=500, detail="Error retrieving user sessions")
+
+
+@app.get("/users/me/stats")
+async def get_my_stats(current_user=Depends(get_current_user)):
+    """Get statistics for the logged-in expert"""
+    if not supabase_client.connected:
+        raise HTTPException(status_code=503, detail="Database not connected")
+    
+    try:
+        user_email = current_user["email"]
+        user_id = current_user["id"]
+        
+        # Sessions count
+        all_sessions = await supabase_client.get_all_sessions()
+        total_interviews = sum(1 for s in all_sessions if s.get("expert_email") == user_email)
+        
+        # Rules stats
+        db_rules = await supabase_client.get_all_rules()
+        user_rules = [r for r in db_rules if r.get("user_id") == user_id or r.get("expert_email") == user_email]
+        
+        total_rules = len(user_rules)
+        approved_rules = sum(1 for r in user_rules if r.get("completed", False))
+        pending_rules = total_rules - approved_rules
+        
+        return {
+            "total_interviews": total_interviews,
+            "pending_tasks": pending_rules,
+            "approved_tasks": approved_rules,
+            "rejected_tasks": total_rules
+        }
+    except Exception as e:
+        logger.error(f"Error getting user stats: {e}")
+        raise HTTPException(status_code=500, detail="Error retrieving stats")
+
+
+@app.get("/users/me/tasks")
+async def get_my_tasks(companion_id: Optional[int] = None, current_user=Depends(get_current_user)):
+    """Get tasks/rules belonging to the logged-in expert"""
+    if not supabase_client.connected:
+        raise HTTPException(status_code=503, detail="Database not connected")
+    
+    try:
+        user_email = current_user["email"]
+        user_id = current_user["id"]
+        
+        db_rules = await supabase_client.get_all_rules()
+        # Filter by user_id or expert_email for safety/migration
+        user_rules = [r for r in db_rules if r.get("user_id") == user_id or r.get("expert_email") == user_email]
+        
+        if companion_id is not None:
+            user_rules = [r for r in user_rules if r.get("companion_id") == companion_id]
+            
+        all_companions = supabase_client.get_all_companions()
+        companion_map = {c["id"]: c["name"] for c in all_companions}
+        companion_map[None] = "Unassigned"
+        
+        user_companions = supabase_client.list_companions_for_user(user_id)
+        
+        tasks = []
+        for rule in user_rules:
+            completed = rule.get('completed', False)
+            status = "completed" if completed else "pending"
+            cid = rule.get('companion_id')
+            cname = companion_map.get(cid, "Unassigned")
+            
+            tasks.append({
+                "id": str(rule['id']),
+                "session_id": str(rule['session_id']),
+                "expert_name": str(rule.get('expert_name', 'Expert')),
+                "task_text": str(rule.get('rule_text', '')),
+                "category": str(rule.get('expertise_area', 'General')),
+                "status": status,
+                "companion_id": cid,
+                "companion_name": cname
+            })
+            
+        return {"tasks": tasks, "companions": user_companions}
+    except Exception as e:
+        logger.error(f"Error getting user tasks: {e}")
+        raise HTTPException(status_code=500, detail="Error retrieving tasks")
+
+
+@app.post("/users/me/tasks/{task_id}/approve")
+async def approve_user_task(task_id: str, current_user=Depends(get_current_user)):
+    """Approve a task owned by the user and send to Jira"""
+    if not supabase_client.connected:
+        raise HTTPException(status_code=503, detail="Database not connected")
+    
+    try:
+        user_email = current_user["email"]
+        user_id = current_user["id"]
+        
+        db_rules = await supabase_client.get_all_rules()
+        rule = next((r for r in db_rules if str(r['id']) == task_id), None)
+        
+        if not rule:
+            raise HTTPException(status_code=404, detail="Rule not found")
+            
+        # Verify ownership
+        if rule.get("user_id") != user_id and rule.get("expert_email") != user_email:
+            raise HTTPException(status_code=403, detail="You do not have permission to approve this rule")
+            
+        # Jira integration (same as admin)
+        jira_key = jira_client.create_task(
+            summary_text=f"AI Coach Rule: {rule['rule_text'][:100]}...",
+            description=f"Expert: {rule.get('expert_name', 'Expert')}\nArea: {rule.get('expertise_area', 'General')}\nRule: {rule['rule_text']}"
+        )
+        
+        if jira_key:
+            await supabase_client.update_rule_completed(rule['id'], True)
+            return {"success": True, "jira_key": jira_key, "message": f"Task approved and added to Jira: {jira_key}"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create Jira task")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error approving user task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/users/me/tasks/{task_id}/reject")
+async def reject_user_task(task_id: str, current_user=Depends(get_current_user)):
+    """Reject a task owned by the user"""
+    if not supabase_client.connected:
+        raise HTTPException(status_code=503, detail="Database not connected")
+        
+    try:
+        user_email = current_user["email"]
+        user_id = current_user["id"]
+        
+        db_rules = await supabase_client.get_all_rules()
+        rule = next((r for r in db_rules if str(r['id']) == task_id), None)
+        
+        if not rule:
+            raise HTTPException(status_code=404, detail="Rule not found")
+            
+        # Verify ownership
+        if rule.get("user_id") != user_id and rule.get("expert_email") != user_email:
+            raise HTTPException(status_code=403, detail="You do not have permission to reject this rule")
+            
+        await supabase_client.update_rule_completed(rule['id'], True)
+        return {"success": True, "message": "Task rejected"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error rejecting user task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/users/me/companions")
@@ -1146,6 +1311,7 @@ async def start_my_interview(body: StartInterviewRequest, current_user=Depends(g
 
     expert_name = current_user.get("name") or "Expert"
     expert_email = current_user["email"]
+    logger.info(f"💾 START INTERVIEW: expert={expert_name}, companion_id={companion_id}")
     await supabase_client.save_session(session_id, expert_name, expert_email, body.expertise_area or "General", companion_id=companion_id)
 
     is_persona = body.companion_slug == "my_persona"
@@ -1167,7 +1333,7 @@ async def start_my_interview(body: StartInterviewRequest, current_user=Depends(g
         await supabase_client.update_session(session_id, conversation_history, 0, False)
     except Exception as e:
         logger.error(f"Failed to save initial message: {e}")
-    return {"session_id": session_id, "message": ai_message, "question_number": 0}
+    return {"session_id": session_id, "message": ai_message, "question_number": 0, "companion_id": companion_id}
 
 
 # Admin Routes

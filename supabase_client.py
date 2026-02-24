@@ -236,6 +236,7 @@ class SupabaseClient:
                 try:
                     cur.execute("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS companion_id INTEGER REFERENCES companions(id);")
                     cur.execute("ALTER TABLE interview_rules ADD COLUMN IF NOT EXISTS companion_id INTEGER REFERENCES companions(id);")
+                    cur.execute("ALTER TABLE interview_rules ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;")
                 except Exception:
                     pass
                 
@@ -265,7 +266,7 @@ class SupabaseClient:
             if conn:
                 self.connection_pool.putconn(conn)
     
-    def insert_rule(self, session_id: str, expert_name: str, expertise_area: str, rule_text: str, expert_email: str = None, companion_id: Optional[int] = None):
+    def insert_rule(self, session_id: str, expert_name: str, expertise_area: str, rule_text: str, expert_email: str = None, companion_id: Optional[int] = None, user_id: Optional[int] = None):
         """Inserts a new rule into the interview_rules table."""
         if not self.connected:
             self.connect()
@@ -278,11 +279,11 @@ class SupabaseClient:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO interview_rules (session_id, expert_name, expertise_area, rule_text, expert_email, companion_id)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    INSERT INTO interview_rules (session_id, expert_name, expertise_area, rule_text, expert_email, companion_id, user_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     RETURNING id;
                     """,
-                    (session_id, expert_name, expertise_area, rule_text, expert_email, companion_id)
+                    (session_id, expert_name, expertise_area, rule_text, expert_email, companion_id, user_id)
                 )
                 rule_id = cur.fetchone()[0]
                 conn.commit()
@@ -333,9 +334,9 @@ class SupabaseClient:
             if 'conn' in locals():
                 self.connection_pool.putconn(conn)
     
-    async def save_interview_rule(self, session_id: str, expert_name: str, expertise_area: str, rule_text: str, expert_email: str = None, companion_id: Optional[int] = None):
+    async def save_interview_rule(self, session_id: str, expert_name: str, expertise_area: str, rule_text: str, expert_email: str = None, companion_id: Optional[int] = None, user_id: Optional[int] = None):
         """Save interview rule to database."""
-        return self.insert_rule(session_id, expert_name, expertise_area, rule_text, expert_email, companion_id)
+        return self.insert_rule(session_id, expert_name, expertise_area, rule_text, expert_email, companion_id, user_id)
     
     async def get_all_rules(self):
         """Get all rules from database."""
@@ -360,7 +361,8 @@ class SupabaseClient:
                     'completed': row[5],  # Corrected: completed is column 5
                     'created_at': row[6],
                     'expert_email': row[7] if len(row) > 7 else None,
-                    'companion_id': row[8] if len(row) > 8 else None
+                    'companion_id': row[8] if len(row) > 8 else None,
+                    'user_id': row[9] if len(row) > 9 else None
                 } for row in rows]
         except Exception as e:
             print(f"❌ Error getting all rules: {e}")

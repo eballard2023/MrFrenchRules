@@ -12,6 +12,22 @@ import asyncio
 # Load environment variables
 load_dotenv()
 
+# 1. users
+# Fields: id, email, password_hash, name, role, created_at, is_active
+# Purpose: Authenticated users (experts/admins).
+# 2. admin_users (legacy / migration source)
+# Only used for migration + admin authentication.
+# Data is migrated into users; authenticate_admin still queries admin_users.
+# 3. interview_sessions
+# Fields: session_id, expert_name, expert_email, expertise_area, conversation_history (JSONB), current_question_index, is_complete, created_at, companion_id.
+# Purpose: Stores each Train Jamie interview session and full chat history.
+# 4. interview_rules
+# Fields: id, session_id, expert_name, expertise_area, rule_text, completed, created_at, expert_email, companion_id, user_id.
+# Purpose: Stores extracted rules/tasks from completed interviews, their status (completed/pending), and ownership.
+# 5. companions
+# Fields: id, name, slug, type, user_id, created_at.
+# Purpose: AI personas/companions (e.g. Jamie product persona and per-user personas). Linked from interview_sessions and interview_rules via companion_id.
+
 # Disable noisy prints in production for this module
 IS_PROD = os.getenv("ENV", "development") == "production"
 if IS_PROD:
@@ -666,6 +682,92 @@ class SupabaseClient:
         except Exception as e:
             print(f"❌ get_all_companions: {e}")
             return []
+        finally:
+            if conn:
+                self.connection_pool.putconn(conn)
+
+    def get_user_by_email(self, email: str) -> Optional[Dict]:
+        """Fetch a user row by email."""
+        if not self.connected:
+            self.connect()
+        if not self.connected:
+            return None
+        conn = None
+        try:
+            conn = self.connection_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, email, name, role, created_at FROM users WHERE email = %s;",
+                    (email,),
+                )
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "email": row[1],
+                        "name": row[2],
+                        "role": row[3],
+                        "created_at": row[4],
+                    }
+                return None
+        except Exception as e:
+            print(f"❌ get_user_by_email error: {e}")
+            return None
+        finally:
+            if conn:
+                self.connection_pool.putconn(conn)
+
+    async def get_behavior_baseline_flag(self, user_id: int) -> bool:
+        """Return True if behavior_baselines.has_baseline is set for this user."""
+        if not self.connected:
+            self.connect()
+        if not self.connected:
+            return False
+        conn = None
+        try:
+            conn = self.connection_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT has_baseline FROM behavior_baselines WHERE user_id = %s;",
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                return bool(row[0]) if row else False
+        except Exception as e:
+            print(f"❌ get_behavior_baseline_flag error: {e}")
+            return False
+        finally:
+            if conn:
+                self.connection_pool.putconn(conn)
+
+    async def set_behavior_baseline_flag(self, user_id: int, has_baseline: bool = True, baseline: Optional[Dict] = None) -> bool:
+        """Upsert behavior_baselines row for this user with has_baseline flag and optional baseline JSON."""
+        if not self.connected:
+            self.connect()
+        if not self.connected:
+            return False
+        conn = None
+        try:
+            conn = self.connection_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO behavior_baselines (user_id, has_baseline, baseline)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        has_baseline = EXCLUDED.has_baseline,
+                        baseline = COALESCE(EXCLUDED.baseline, behavior_baselines.baseline),
+                        updated_at = NOW();
+                    """,
+                    (user_id, has_baseline, json.dumps(baseline) if baseline is not None else None),
+                )
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"❌ set_behavior_baseline_flag error: {e}")
+            if conn:
+                conn.rollback()
+            return False
         finally:
             if conn:
                 self.connection_pool.putconn(conn)

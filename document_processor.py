@@ -31,6 +31,8 @@ from openai import AsyncOpenAI
 from chroma_client import get_chroma_client
 from io import BytesIO
 
+from memory.memory_service import save_memory
+
 logger = logging.getLogger(__name__)
 def upload_pdf_to_s3(pdf_stream: BytesIO) -> str:
     bucket_name= os.getenv("BUCKET_NAME") or "interviewuploadeddocuments"
@@ -99,7 +101,7 @@ class DocumentProcessor:
             
             logger.info(f"📝 Extracted {len(content_chunks)} chunks from {filename}")
             
-            # Store chunks in ChromaDB
+            # Store chunks in ChromaDB (document store) and mirror into session memory
             stored_chunks = 0
             for i, chunk_data in enumerate(content_chunks):
                 try:
@@ -137,6 +139,11 @@ class DocumentProcessor:
                     
                     if success:
                         stored_chunks += 1
+                        # Also mirror into conversational memory collection for this session
+                        try:
+                            await save_memory(session_id, "doc", chunk_data["content"])
+                        except Exception as mem_err:
+                            logger.warning(f"Failed to mirror doc chunk to memory for session {session_id}: {mem_err}")
                     
                 except Exception as e:
                     logger.error(f"Error processing chunk {i}: {e}")

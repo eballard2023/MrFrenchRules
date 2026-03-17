@@ -33,4 +33,3 @@ class UserLoginRequest(BaseModel):
 class StartInterviewRequest(BaseModel):
     """Used when starting an interview from the user dashboard (authenticated)."""
     expertise_area: str = "General"
-    companion_slug: str = "jamie"  # 'jamie' or 'my_persona'

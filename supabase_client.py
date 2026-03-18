@@ -4,7 +4,7 @@ from psycopg2 import pool
 import os
 import re
 import json
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from dotenv import load_dotenv
 import time
 import asyncio
@@ -717,31 +717,8 @@ class SupabaseClient:
             if conn:
                 self.connection_pool.putconn(conn)
 
-    async def get_behavior_baseline_flag(self, user_id: int) -> bool:
-        """Return True if behavior_baselines.has_baseline is set for this user."""
-        if not self.connected:
-            self.connect()
-        if not self.connected:
-            return False
-        conn = None
-        try:
-            conn = self.connection_pool.getconn()
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT has_baseline FROM behavior_baselines WHERE user_id = %s;",
-                    (user_id,),
-                )
-                row = cur.fetchone()
-                return bool(row[0]) if row else False
-        except Exception as e:
-            print(f"❌ get_behavior_baseline_flag error: {e}")
-            return False
-        finally:
-            if conn:
-                self.connection_pool.putconn(conn)
-
-    async def set_behavior_baseline_flag(self, user_id: int, has_baseline: bool = True, baseline: Optional[Dict] = None) -> bool:
-        """Upsert behavior_baselines row for this user with has_baseline flag and optional baseline JSON."""
+    async def get_behavior_baseline_flag(self, user_id: int, session_id: int) -> bool:
+        """Return True if behavior_baselines.has_baseline is set for this user and session."""
         if not self.connected:
             self.connect()
         if not self.connected:
@@ -752,19 +729,165 @@ class SupabaseClient:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO behavior_baselines (user_id, has_baseline, baseline)
-                    VALUES (%s, %s, %s)
+                    SELECT has_baseline 
+                    FROM behavior_baselines 
+                    WHERE user_id = %s AND session_id = %s;
+                    """,
+                    (user_id, session_id),
+                )
+                row = cur.fetchone()
+                return bool(row[0]) if row else False
+        except Exception as e:
+            print(f"❌ get_behavior_baseline_flag error: {e}")
+            return False
+        finally:
+            if conn:
+                self.connection_pool.putconn(conn)
+
+    async def set_behavior_baseline_flag(
+        self,
+        user_id: int,
+        session_id: int,
+        has_baseline: bool = True,
+        baseline: Optional[Dict] = None,
+    ) -> bool:
+        """Upsert behavior_baselines row for this user/session with baseline JSON."""
+        if not self.connected:
+            self.connect()
+        if not self.connected:
+            return False
+        conn = None
+        try:
+            conn = self.connection_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO behavior_baselines (user_id, session_id, has_baseline, baseline)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT (user_id) DO UPDATE SET
+                        session_id = EXCLUDED.session_id,
                         has_baseline = EXCLUDED.has_baseline,
                         baseline = COALESCE(EXCLUDED.baseline, behavior_baselines.baseline),
                         updated_at = NOW();
                     """,
-                    (user_id, has_baseline, json.dumps(baseline) if baseline is not None else None),
+                    (
+                        user_id,
+                        session_id,
+                        has_baseline,
+                        json.dumps(baseline) if baseline is not None else None
+                    ),
                 )
                 conn.commit()
                 return True
         except Exception as e:
             print(f"❌ set_behavior_baseline_flag error: {e}")
+            if conn:
+                conn.rollback()
+            return False
+        finally:
+            if conn:
+                self.connection_pool.putconn(conn)
+
+    async def get_behavior_latest_state(
+        self,
+        user_id: int,
+        session_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch the latest behavioral engine state (status, z_scores, cusum, threshold)
+        previously stored for this (user_id, session_id) pair.
+        """
+        if not self.connected:
+            self.connect()
+        if not self.connected:
+            return None
+        conn = None
+        try:
+            conn = self.connection_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT latest_state
+                    FROM behavior_baselines
+                    WHERE user_id = %s AND session_id = %s;
+                    """,
+                    (user_id, session_id),
+                )
+                row = cur.fetchone()
+                if not row or row[0] is None:
+                    return None
+                # latest_state is JSONB; psycopg returns it already parsed as dict
+                return row[0]
+        except Exception as e:
+            print(f"❌ get_behavior_latest_state error: {e}")
+            return None
+        finally:
+            if conn:
+                self.connection_pool.putconn(conn)
+
+    async def set_behavior_latest_state(
+        self,
+        user_id: int,
+        session_id: int,
+        latest_state: Dict[str, Any],
+    ) -> bool:
+        """
+        Persist the latest behavioral engine state for this (user_id, session_id).
+
+        We do a manual upsert (SELECT then UPDATE/INSERT) so we don't depend on
+        a specific ON CONFLICT constraint in the database schema.
+        """
+        if not self.connected:
+            self.connect()
+        if not self.connected:
+            return False
+        conn = None
+        try:
+            conn = self.connection_pool.getconn()
+            with conn.cursor() as cur:
+                # Check if a row already exists
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM behavior_baselines
+                    WHERE user_id = %s AND session_id = %s;
+                    """,
+                    (user_id, session_id),
+                )
+                exists = cur.fetchone() is not None
+
+                if exists:
+                    # Update existing baseline row with latest_state
+                    cur.execute(
+                        """
+                        UPDATE behavior_baselines
+                        SET
+                            latest_state = %s,
+                            latest_state_updated_at = NOW()
+                        WHERE user_id = %s AND session_id = %s;
+                        """,
+                        (json.dumps(latest_state), user_id, session_id),
+                    )
+                else:
+                    # Insert a new row with minimal baseline info plus latest_state
+                    cur.execute(
+                        """
+                        INSERT INTO behavior_baselines
+                            (user_id, session_id, has_baseline, baseline, latest_state, latest_state_updated_at)
+                        VALUES (%s, %s, %s, %s, %s, NOW());
+                        """,
+                        (
+                            user_id,
+                            session_id,
+                            True,
+                            None,
+                            json.dumps(latest_state),
+                        ),
+                    )
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"❌ set_behavior_latest_state error: {e}")
             if conn:
                 conn.rollback()
             return False

@@ -359,7 +359,7 @@ from behavior.sensors.extractor import SolidFeatureExtractor
 from behavior.engine.statistics import BehavioralEngine
 from behavior.initialise_baseline import initialize_user_baseline
 
-MIN_WORDS_FOR_BASELINE = 500
+MIN_WORDS_FOR_BASELINE = 250
 
 # Global behavioral extractor + engine (initialized once baseline is built)
 _behavior_extractor = SolidFeatureExtractor()
@@ -375,9 +375,10 @@ async def _ensure_behavior_baseline(session_data: Dict[str, Any]) -> None:
     there are at least MIN_WORDS_FOR_BASELINE words.
     """
     global _behavior_engine
-
+    print("session_data", session_data)
     # Map expert_email -> user_id
     expert_email = session_data.get("expert_email")
+    session_id = int(session_data.get("session_id"))
     if not expert_email:
         return
 
@@ -388,7 +389,7 @@ async def _ensure_behavior_baseline(session_data: Dict[str, Any]) -> None:
     user_id = user_row["id"]
 
     # If DB says baseline exists, ensure engine is loaded and return
-    has_baseline = await supabase_client.get_behavior_baseline_flag(user_id)  # type: ignore[arg-type]
+    has_baseline = await supabase_client.get_behavior_baseline_flag(user_id, session_id)  # type: ignore[arg-type]
     if has_baseline and _behavior_engine is not None and getattr(_behavior_engine, "baseline_mean", None) is not None:
         return
 
@@ -416,7 +417,7 @@ async def _ensure_behavior_baseline(session_data: Dict[str, Any]) -> None:
         )
         _behavior_engine = BehavioralEngine(baseline_data=baseline_json, threshold=1.5)
         # Store baseline JSON in DB for this user
-        success = await supabase_client.set_behavior_baseline_flag(user_id, True, baseline_json)  # type: ignore[arg-type]
+        success = await supabase_client.set_behavior_baseline_flag(user_id, session_id, True, baseline_json)  # type: ignore[arg-type]
         if not success:
             logger.warning("Failed to set behavior baseline flag in DB")
         logger.info("Behavior baseline initialized from conversation history and stored in DB.")
@@ -494,8 +495,8 @@ async def chat(chat_message: ChatMessage):
         if _behavior_engine is not None and _behavior_engine.baseline_mean is not None:
             scores = _behavior_extractor.get_scores(chat_message.message)
             behavior_status, z_scores = _behavior_engine.update_and_check(scores)
-            # Store state for frontend behavioral visualization
-            _session_behavior_state[session_id] = {
+            # Build latest behavioral state snapshot
+            latest_state = {
                 "status": behavior_status,
                 "z_scores": z_scores.tolist() if hasattr(z_scores, "tolist") else list(z_scores),
                 "cusum_pos": _behavior_engine.cusum_pos.tolist(),
@@ -503,6 +504,28 @@ async def chat(chat_message: ChatMessage):
                 "threshold": 1.5,
                 "labels": ["V", "A", "D", "O", "C", "E", "A", "N"],
             }
+            # Store in-memory for fast access
+            _session_behavior_state[session_id] = latest_state
+            # Persist latest state in DB so it survives restarts
+            try:
+                expert_email = session_data.get("expert_email")
+                if expert_email:
+                    user_row = supabase_client.get_user_by_email(expert_email)
+                    if user_row:
+                        # behavior_baselines.session_id is stored as integer in DB
+                        db_session_id: Optional[int] = None
+                        try:
+                            db_session_id = int(session_id)
+                        except (TypeError, ValueError):
+                            db_session_id = None
+                        if db_session_id is not None:
+                            await supabase_client.set_behavior_latest_state(  # type: ignore[arg-type]
+                                user_row["id"],
+                                db_session_id,
+                                latest_state,
+                            )
+            except Exception as persist_err:
+                logger.warning(f"Failed to persist behavioral latest state: {persist_err}")
     except Exception as e:
         logger.warning(f"Behavioral engine error (non-fatal): {e}")
 
@@ -739,7 +762,12 @@ async def reject_user_task(task_id: str, current_user: dict = Depends(get_curren
 
 @app.get("/users/me/behavior/{session_id}")
 async def get_my_behavior(session_id: str, current_user: dict = Depends(get_current_user)):
-    """Return the latest behavioral engine state (z-scores, CUSUM, status) for the session."""
+    """
+    Return the latest behavioral engine state (z-scores, CUSUM, status) for the session.
+
+    Prefers in-memory cache (_session_behavior_state), but falls back to DB
+    (behavior_baselines.latest_state) so charts keep working across restarts.
+    """
     default = {
         "status": "NO_BASELINE",
         "z_scores": [],
@@ -748,9 +776,43 @@ async def get_my_behavior(session_id: str, current_user: dict = Depends(get_curr
         "threshold": 1.5,
         "labels": ["V", "A", "D", "O", "C", "E", "A", "N"],
     }
-    state = _session_behavior_state.get(session_id, default)
+
+    # 1) Try in-memory state keyed by session_id string
+    state = _session_behavior_state.get(session_id)
+
+    # 2) If not present in memory, try DB (user_id + numeric session_id)
+    if state is None:
+        db_session_id: Optional[int] = None
+        try:
+            db_session_id = int(session_id)
+        except (TypeError, ValueError):
+            db_session_id = None
+
+        if db_session_id is not None:
+            try:
+                latest = await supabase_client.get_behavior_latest_state(  # type: ignore[arg-type]
+                    current_user["id"],
+                    db_session_id,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to fetch behavioral latest state from DB: {e}")
+                latest = None
+
+            if latest:
+                # Also warm the in-memory cache for this process
+                state = {**default, **latest}
+                _session_behavior_state[session_id] = state
+
+    # 3) Fall back to default if still nothing
+    if state is None:
+        state = default
+
+    # Ensure labels and threshold are always present
     if not state.get("labels"):
         state = {**default, **state, "labels": ["V", "A", "D", "O", "C", "E", "A", "N"]}
+    if "threshold" not in state:
+        state["threshold"] = 1.5
+
     return state
 
 

@@ -14,6 +14,13 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
     && python -m spacy download en_core_web_sm
 
+# Pre-download HuggingFace models at build time so cold starts don't timeout
+RUN python -c "\
+from transformers import pipeline; \
+pipeline('text-classification', model='SamLowe/roberta-base-go_emotions', top_k=None); \
+pipeline('text-classification', model='Minej/bert-base-personality', top_k=None); \
+print('Models cached successfully')"
+
 COPY . .
 
 # APP_PORT = web server port (avoids conflict with DB "port" in .env)

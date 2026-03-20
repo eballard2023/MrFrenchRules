@@ -676,6 +676,8 @@ async def get_my_sessions(current_user: dict = Depends(get_current_user)):
             "expert_name": s.get("expert_name", "Expert"),
             "expertise_area": s.get("expertise_area", "General"),
             "completed": s.get("is_complete", False),
+            "is_complete": s.get("is_complete", False),
+            "created_at": s.get("created_at"),
             "messages": s.get("conversation_history", []),
             "companion_id": s.get("companion_id"),
         }
@@ -859,6 +861,8 @@ async def get_admin_conversations(current_admin: dict = Depends(get_current_admi
                     "expert_name": s.get("expert_name", "Unknown"),
                     "expertise_area": s.get("expertise_area", "General"),
                     "completed": s.get("is_complete", False),
+                    "is_complete": s.get("is_complete", False),
+                    "created_at": s.get("created_at"),
                     "messages": s.get("conversation_history", []),
                 }
                 for s in all_sessions if s.get("conversation_history")
